@@ -1,8 +1,9 @@
-export type DeviceConnectionState =
+export type DeviceState =
   | "idle"
+  | "scanning"
+  | "results"
   | "connecting"
   | "connected"
-  | "disconnected"
   | "error";
 
 export type DeviceConnectionErrorCode =
@@ -13,7 +14,9 @@ export type DeviceConnectionErrorCode =
   | "NETWORK_ERROR"
   | "INVALID_RESPONSE"
   | "NOT_OVIS_DEVICE"
-  | "UNSUPPORTED_API_VERSION";
+  | "UNSUPPORTED_API_VERSION"
+  | "DEVICE_CHANGED"
+  | "DEVICE_DISCONNECTED";
 
 export interface OvisDeviceInfo {
   protocol: "ovis-device";
@@ -26,12 +29,24 @@ export interface OvisDeviceInfo {
   manager_version: string;
 }
 
+export interface DiscoveredDevice {
+  apiBaseUrl: string;
+  info: OvisDeviceInfo;
+  status: "online" | "offline";
+}
+
 export interface UseDeviceConnection {
-  state: DeviceConnectionState;
+  state: DeviceState;
+  devices: DiscoveredDevice[];
+  selectedDevice: DiscoveredDevice | null;
   device: OvisDeviceInfo | null;
   error: DeviceConnectionErrorCode | null;
   connectedAt: Date | null;
+  scan(): Promise<void>;
+  cancelScan(): void;
+  selectDevice(deviceId: string): void;
   connect(): Promise<void>;
   disconnect(): void;
+  rescan(): Promise<void>;
   retry(): Promise<void>;
 }

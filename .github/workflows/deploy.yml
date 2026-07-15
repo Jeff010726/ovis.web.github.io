@@ -26,8 +26,6 @@ jobs:
       - run: npm ci
       # GitHub Pages uses the repository name as the project path.
       - run: npm run build -- --base=/OVIS_WEB/
-        env:
-          VITE_DEVICE_API_URL: ${{ vars.VITE_DEVICE_API_URL || 'http://192.168.42.1:8080/api/v1' }}
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

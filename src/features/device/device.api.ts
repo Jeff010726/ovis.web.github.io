@@ -1,14 +1,31 @@
 import type {
   DeviceConnectionErrorCode,
+  DiscoveredDevice,
   OvisDeviceInfo,
 } from "./device.types";
 
-const REQUEST_TIMEOUT_MS = 3_000;
+const CONNECTION_TIMEOUT_MS = 3_000;
+const SCAN_TIMEOUT_MS = 1_500;
+const MAX_SCAN_CONCURRENCY = 4;
 const SUPPORTED_API_VERSION = 1;
+
+export const DEVICE_HOSTS = Array.from(
+  { length: 16 },
+  (_, index) => `192.168.${42 + index}.1`,
+);
+
+export const DEVICE_API_BASE_URLS = DEVICE_HOSTS.map(
+  (host) => `http://${host}:8080/api/v1`,
+);
 
 type LocalRequestInit = RequestInit & {
   targetAddressSpace: "local";
 };
+
+interface FetchDeviceInfoOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
 
 export class DeviceConnectionError extends Error {
   constructor(public readonly code: DeviceConnectionErrorCode) {
@@ -72,7 +89,7 @@ function validateDeviceInfo(value: unknown): OvisDeviceInfo {
     throw new DeviceConnectionError("INVALID_RESPONSE");
   }
 
-  return value as unknown as OvisDeviceInfo;
+  return value as OvisDeviceInfo;
 }
 
 function mapRequestError(error: unknown): DeviceConnectionError {
@@ -89,14 +106,18 @@ function mapRequestError(error: unknown): DeviceConnectionError {
   return new DeviceConnectionError("NETWORK_ERROR");
 }
 
-export async function fetchDeviceInfo(): Promise<OvisDeviceInfo> {
-  const apiUrl = import.meta.env.VITE_DEVICE_API_URL?.replace(/\/$/, "");
-  if (!apiUrl) {
-    throw new DeviceConnectionError("NETWORK_ERROR");
-  }
-
+export async function fetchDeviceInfo(
+  apiBaseUrl: string,
+  options: FetchDeviceInfoOptions = {},
+): Promise<OvisDeviceInfo> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? CONNECTION_TIMEOUT_MS,
+  );
+  const abortFromParent = () => controller.abort();
+  options.signal?.addEventListener("abort", abortFromParent, { once: true });
+
   const requestOptions: LocalRequestInit = {
     method: "GET",
     mode: "cors",
@@ -106,7 +127,10 @@ export async function fetchDeviceInfo(): Promise<OvisDeviceInfo> {
   };
 
   try {
-    const response = await fetch(`${apiUrl}/device/info`, requestOptions);
+    const response = await fetch(
+      `${apiBaseUrl.replace(/\/$/, "")}/device/info`,
+      requestOptions,
+    );
     if (response.status === 404) {
       throw new DeviceConnectionError("DEVICE_NOT_FOUND");
     }
@@ -125,5 +149,46 @@ export async function fetchDeviceInfo(): Promise<OvisDeviceInfo> {
     throw mapRequestError(error);
   } finally {
     window.clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromParent);
   }
+}
+
+export async function discoverDevices(
+  signal: AbortSignal,
+): Promise<DiscoveredDevice[]> {
+  const results: Array<DiscoveredDevice | undefined> = new Array(
+    DEVICE_API_BASE_URLS.length,
+  );
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (!signal.aborted) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= DEVICE_API_BASE_URLS.length) return;
+
+      const apiBaseUrl = DEVICE_API_BASE_URLS[index];
+      try {
+        const info = await fetchDeviceInfo(apiBaseUrl, {
+          timeoutMs: SCAN_TIMEOUT_MS,
+          signal,
+        });
+        results[index] = { apiBaseUrl, info, status: "online" };
+      } catch {
+        // Unreachable and incompatible addresses are expected during discovery.
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: MAX_SCAN_CONCURRENCY }, () => worker()),
+  );
+
+  const uniqueDevices = new Map<string, DiscoveredDevice>();
+  results.forEach((device) => {
+    if (device && !uniqueDevices.has(device.info.device_id)) {
+      uniqueDevices.set(device.info.device_id, device);
+    }
+  });
+  return [...uniqueDevices.values()];
 }

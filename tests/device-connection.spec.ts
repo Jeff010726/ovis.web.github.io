@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 
-async function readCanvasSignal(page: import("@playwright/test").Page) {
+async function readCanvasSignal(page: Page) {
   return page.locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
     const gl = canvas.getContext("webgl2");
     if (!gl) {
@@ -50,12 +51,42 @@ const deviceInfo = {
   manager_version: "1.0.0",
 };
 
-test("shows the initial connection workspace", async ({ page }) => {
+const secondDeviceInfo = {
+  ...deviceInfo,
+  device_id: "OVIS-1842-00987654",
+  name: "OVIS Camera B",
+  serial: "OVIS-1842-00987654",
+};
+
+const requestHost = (route: Route) => new URL(route.request().url()).hostname;
+
+const fulfillJson = (route: Route, body: unknown) =>
+  route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+
+async function discoverSingleDevice(page: Page) {
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) === "192.168.42.1") {
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(
+    page.getByRole("radio", { name: /OVIS Camera OVIS-1842-00123456/ }),
+  ).toBeVisible();
+}
+
+test("shows the initial discovery workspace", async ({ page }) => {
   await page.goto("./");
 
   await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "连接设备" })).toBeVisible();
-  await expect(page.getByText("等待连接")).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索设备" })).toBeVisible();
+  await expect(page.getByText("等待搜索")).toBeVisible();
   await expect(page.getByText("参数配置")).toHaveCount(0);
   await page.screenshot({ path: "/tmp/ovis-idle-desktop.png", fullPage: true });
 });
@@ -83,7 +114,6 @@ test("renders and rotates the optimized product model", async ({ page }) => {
   expect(rotatedFrame.hash).not.toBe(firstFrame.hash);
   expect(rotatedFrame.minY).toBeGreaterThan(rotatedFrame.height * 0.03);
   expect(rotatedFrame.maxY).toBeLessThan(rotatedFrame.height * 0.97);
-  await page.screenshot({ path: "/tmp/ovis-model-framed.png", fullPage: true });
 
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
@@ -103,71 +133,173 @@ test("renders and rotates the optimized product model", async ({ page }) => {
   await page.screenshot({ path: "/tmp/ovis-model-desktop.png", fullPage: true });
 });
 
-test("connects, displays device metadata, and disconnects locally", async ({
+test("scans with at most four requests and deduplicates device ids", async ({
   page,
 }) => {
-  await page.route("**/api/v1/device/info", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(deviceInfo) }),
-  );
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const requestedHosts = new Set<string>();
+
+  await page.route("**/api/v1/device/info", async (route) => {
+    activeRequests += 1;
+    maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+    const host = requestHost(route);
+    requestedHosts.add(host);
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    activeRequests -= 1;
+
+    if (host === "192.168.42.1" || host === "192.168.43.1") {
+      return fulfillJson(route, deviceInfo);
+    }
+    if (host === "192.168.44.1") {
+      return fulfillJson(route, secondDeviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
   await page.goto("./");
-  await page.getByRole("button", { name: "连接设备" }).click();
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(page.getByText("发现 2 台 OVIS 设备")).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(2);
+  expect(requestedHosts.size).toBe(16);
+  expect(maximumActiveRequests).toBeGreaterThan(1);
+  expect(maximumActiveRequests).toBeLessThanOrEqual(4);
+  await page.screenshot({ path: "/tmp/ovis-results-desktop.png", fullPage: true });
+});
+
+test("selects, confirms, connects, and disconnects locally", async ({ page }) => {
+  await discoverSingleDevice(page);
+
+  const result = page.getByRole("radio", {
+    name: /OVIS Camera OVIS-1842-00123456/,
+  });
+  const connectButton = page.getByRole("button", { name: "连接", exact: true });
+  await expect(connectButton).toBeDisabled();
+  await result.click();
+  await expect(connectButton).toBeEnabled();
+  await connectButton.click();
 
   await expect(page.getByText("设备在线")).toBeVisible();
   await expect(page.getByRole("heading", { name: "OVIS Camera" })).toBeVisible();
   await expect(page.getByText("OVIS-1842-00123456").first()).toBeVisible();
   await expect(page.getByText("Manager 版本")).toBeVisible();
   await expect(page.getByText("v1", { exact: true })).toBeVisible();
+  await expect(page.getByText("192.168.42.1:8080/api/v1")).toBeVisible();
   await page.screenshot({ path: "/tmp/ovis-connected-desktop.png", fullPage: true });
 
   await page.getByRole("button", { name: "断开连接" }).click();
-  await expect(page.getByRole("button", { name: "连接设备" })).toBeVisible();
-  await expect(page.getByText("等待连接")).toBeVisible();
+  await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
+  await expect(page.getByText("搜索完成")).toBeVisible();
 });
 
-test("reports an incompatible device API", async ({ page }) => {
-  await page.route("**/api/v1/device/info", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ ...deviceInfo, api_version: 2 }),
-    }),
-  );
-  await page.goto("./");
-  await page.getByRole("button", { name: "连接设备" }).click();
-
-  await expect(page.getByText("API 版本不兼容")).toBeVisible();
-  await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
-});
-
-test("marks the device disconnected after two heartbeat failures", async ({
+test("supports cancelling a scan and rescanning after an empty result", async ({
   page,
 }) => {
-  let requestCount = 0;
+  let returnDevice = false;
+  let delayRequests = true;
+  await page.route("**/api/v1/device/info", async (route) => {
+    if (delayRequests) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    if (returnDevice && requestHost(route) === "192.168.42.1") {
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(page.getByText("正在搜索 OVIS 设备")).toBeVisible();
+  await page.getByRole("button", { name: "取消搜索" }).click();
+  await expect(page.getByRole("button", { name: "搜索设备" })).toBeVisible();
+
+  delayRequests = false;
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(page.getByText("未发现 OVIS 设备")).toBeVisible();
+  returnDevice = true;
+  await page.getByRole("button", { name: "重新搜索" }).click();
+  await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
+});
+
+test("rejects a device whose identity changes before connection", async ({
+  page,
+}) => {
+  let selectedHostRequests = 0;
   await page.route("**/api/v1/device/info", (route) => {
-    requestCount += 1;
-    if (requestCount === 1) {
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(deviceInfo),
-      });
+    if (requestHost(route) !== "192.168.42.1") {
+      return route.abort("connectionrefused");
+    }
+    selectedHostRequests += 1;
+    return fulfillJson(
+      route,
+      selectedHostRequests === 1 ? deviceInfo : secondDeviceInfo,
+    );
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByText("设备身份已变化")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新连接" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新搜索" })).toBeVisible();
+});
+
+test("ignores incompatible responses during discovery", async ({ page }) => {
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) === "192.168.42.1") {
+      return fulfillJson(route, { ...deviceInfo, api_version: 2 });
     }
     return route.abort("connectionrefused");
   });
   await page.goto("./");
-  await page.getByRole("button", { name: "连接设备" }).click();
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByText("未发现 OVIS 设备")).toBeVisible();
+  await expect(page.getByText("API 版本不兼容")).toHaveCount(0);
+});
+
+test("heartbeats only the selected device and stops after two failures", async ({
+  page,
+}) => {
+  const requestsByHost = new Map<string, number>();
+  await page.route("**/api/v1/device/info", (route) => {
+    const host = requestHost(route);
+    const count = (requestsByHost.get(host) ?? 0) + 1;
+    requestsByHost.set(host, count);
+
+    if (host === "192.168.42.1" && count <= 2) {
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
 
   await expect(page.getByText("设备在线")).toBeVisible();
   await expect(page.getByText("设备连接已中断")).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText("连接已断开")).toBeVisible();
-  expect(requestCount).toBe(3);
+  await expect(page.getByText("操作异常")).toBeVisible();
+  expect(requestsByHost.get("192.168.42.1")).toBe(4);
+  expect(requestsByHost.get("192.168.43.1")).toBe(1);
 });
 
-test("keeps the mobile workspace within the viewport", async ({ page }) => {
+test("keeps idle and result workspaces within a mobile viewport", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/v1/device/info", (route) => {
+    const host = requestHost(route);
+    if (host === "192.168.42.1") return fulfillJson(route, deviceInfo);
+    if (host === "192.168.43.1") return fulfillJson(route, secondDeviceInfo);
+    return route.abort("connectionrefused");
+  });
   await page.goto("./");
 
-  await expect(page.getByRole("button", { name: "连接设备" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索设备" })).toBeVisible();
   const model = page.getByRole("img", { name: "OVIS 相机模组 3D 展示" });
   await expect(model).toHaveAttribute("data-model-status", "ready", {
     timeout: 15_000,
@@ -176,10 +308,13 @@ test("keeps the mobile workspace within the viewport", async ({ page }) => {
   expect(canvasSignal.visiblePixels).toBeGreaterThan(
     canvasSignal.width * canvasSignal.height * 0.02,
   );
+
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(page.getByText("发现 2 台 OVIS 设备")).toBeVisible();
   const dimensions = await page.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
     contentWidth: document.documentElement.scrollWidth,
   }));
   expect(dimensions.contentWidth).toBe(dimensions.viewportWidth);
-  await page.screenshot({ path: "/tmp/ovis-idle-mobile.png", fullPage: true });
+  await page.screenshot({ path: "/tmp/ovis-results-mobile.png", fullPage: true });
 });

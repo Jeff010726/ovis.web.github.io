@@ -1,10 +1,12 @@
-import { Cpu, Radio, Unplug } from "lucide-react";
+import { Cpu, Radio, RefreshCw, Unplug } from "lucide-react";
 import type { OvisDeviceInfo } from "./device.types";
 
 interface DeviceSummaryProps {
   device: OvisDeviceInfo;
+  apiBaseUrl: string;
   connectedAt: Date | null;
   onDisconnect: () => void;
+  onRescan: () => void;
 }
 
 const formatConnectionTime = (value: Date | null) =>
@@ -20,15 +22,21 @@ const formatConnectionTime = (value: Date | null) =>
       }).format(value)
     : "-";
 
+const formatEndpoint = (apiBaseUrl: string) =>
+  apiBaseUrl.replace(/^https?:\/\//, "");
+
 export function DeviceSummary({
   device,
+  apiBaseUrl,
   connectedAt,
   onDisconnect,
+  onRescan,
 }: DeviceSummaryProps) {
   const identityItems = [
     ["设备型号", device.model],
     ["设备名称", device.name],
     ["唯一序列号", device.serial],
+    ["设备地址", formatEndpoint(apiBaseUrl)],
   ];
   const systemItems = [
     ["固件版本", device.firmware_version],
@@ -90,14 +98,24 @@ export function DeviceSummary({
           <span>本次连接</span>
           <time>{formatConnectionTime(connectedAt)}</time>
         </div>
-        <button
-          className="button button--secondary button--disconnect"
-          type="button"
-          onClick={onDisconnect}
-        >
-          <Unplug size={16} />
-          断开连接
-        </button>
+        <div className="device-summary__actions">
+          <button
+            className="button button--ghost"
+            type="button"
+            onClick={onRescan}
+          >
+            <RefreshCw size={15} />
+            重新搜索
+          </button>
+          <button
+            className="button button--secondary button--disconnect"
+            type="button"
+            onClick={onDisconnect}
+          >
+            <Unplug size={16} />
+            断开连接
+          </button>
+        </div>
       </footer>
     </div>
   );

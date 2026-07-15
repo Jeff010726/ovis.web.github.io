@@ -26,11 +26,17 @@ function App() {
         <section className="workspace-panel" aria-label="设备连接工作区">
           <DeviceConnector
             state={connection.state}
+            devices={connection.devices}
+            selectedDevice={connection.selectedDevice}
             device={connection.device}
             error={connection.error}
             connectedAt={connection.connectedAt}
+            onScan={() => void connection.scan()}
+            onCancelScan={connection.cancelScan}
+            onSelectDevice={connection.selectDevice}
             onConnect={() => void connection.connect()}
             onDisconnect={connection.disconnect}
+            onRescan={() => void connection.rescan()}
             onRetry={() => void connection.retry()}
           />
         </section>

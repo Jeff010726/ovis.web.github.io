@@ -1,15 +1,16 @@
-import type { DeviceConnectionState } from "../features/device/device.types";
+import type { DeviceState } from "../features/device/device.types";
 
-const STATE_LABELS: Record<DeviceConnectionState, string> = {
-  idle: "等待连接",
+const STATE_LABELS: Record<DeviceState, string> = {
+  idle: "等待搜索",
+  scanning: "正在搜索",
+  results: "搜索完成",
   connecting: "正在连接",
   connected: "设备在线",
-  disconnected: "连接已断开",
-  error: "连接异常",
+  error: "操作异常",
 };
 
 interface ConnectionStatusProps {
-  state: DeviceConnectionState;
+  state: DeviceState;
 }
 
 export function ConnectionStatus({ state }: ConnectionStatusProps) {
