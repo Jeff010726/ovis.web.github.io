@@ -30,7 +30,10 @@ function App() {
           </h1>
         </div>
 
-        <section className="workspace-panel" aria-label="设备连接工作区">
+        <section
+          className={`workspace-panel ${connection.state === "connected" ? "workspace-panel--configuration" : ""}`}
+          aria-label="设备连接工作区"
+        >
           <DeviceConnector
             state={connection.state}
             devices={connection.devices}

@@ -281,21 +281,84 @@ test("selects, confirms, connects, and disconnects locally", async ({ page }) =>
   await expect(connectButton).toBeEnabled();
   await connectButton.click();
 
-  await expect(page.getByText("设备在线")).toBeVisible();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "设备配置", level: 1 })).toBeVisible();
   await expect(page.getByRole("heading", { name: "OVIS Camera" })).toBeVisible();
   await expect(page.getByAltText("OVIS Camera 产品图")).toBeVisible();
   await expect(page.getByText("OVIS-1842-00123456").first()).toBeVisible();
-  await expect(page.getByText("固件 / Manager")).toBeVisible();
+  await expect(page.getByText("固件版本")).toBeVisible();
+  await expect(page.getByText("Manager", { exact: true })).toBeVisible();
   await expect(page.getByText("设备配置", { exact: true }).last()).toBeVisible();
   await expect(page.getByRole("region", { name: "主码流" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "启用 OSD" })).toBeChecked();
   await expect(page.getByText("192.168.42.1:8080/api/v1")).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "配置分类" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("complementary", { name: "当前设备仪表盘" }),
+  ).toBeVisible();
+
+  const configurationEditor = page.locator(".configuration-editor");
+  const videoSectionButton = page.getByRole("button", {
+    name: "01 视频码流",
+  });
+  const detectionSectionButton = page.getByRole("button", {
+    name: "02 智能检测",
+  });
+  const dashboard = page.getByRole("complementary", {
+    name: "当前设备仪表盘",
+  });
+  const dashboardTop = (await dashboard.boundingBox())?.y;
+  await expect(videoSectionButton).toHaveAttribute("aria-current", "true");
+  await detectionSectionButton.click();
+  await expect(detectionSectionButton).toHaveAttribute("aria-current", "true");
+  await expect
+    .poll(() => configurationEditor.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(200);
+  expect((await dashboard.boundingBox())?.y).toBeCloseTo(dashboardTop ?? 0, 0);
+  await videoSectionButton.click();
+  await expect(videoSectionButton).toHaveAttribute("aria-current", "true");
   await page.screenshot({ path: "/tmp/ovis-connected-desktop.png", fullPage: true });
 
   await page.getByTitle("断开连接").click();
   await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
   await expect(page.getByText("搜索完成")).toBeVisible();
+});
+
+test("scales the configuration workspace and keeps the dashboard fixed at 2K", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 2560, height: 1440 });
+  await mockConfigurationRead(page);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  const workspace = page.locator(".workspace-panel--configuration");
+  const dashboard = page.getByRole("complementary", {
+    name: "当前设备仪表盘",
+  });
+  const sectionMenu = page.getByRole("navigation", { name: "配置分类" });
+
+  await expect(workspace).toBeVisible();
+  await expect(dashboard).toBeVisible();
+  await expect(sectionMenu).toBeVisible();
+
+  const workspaceBounds = await workspace.boundingBox();
+  const dashboardBounds = await dashboard.boundingBox();
+  expect(workspaceBounds?.width).toBeGreaterThan(1700);
+  expect(workspaceBounds?.height).toBeGreaterThan(900);
+  expect(dashboardBounds?.width).toBeGreaterThanOrEqual(380);
+
+  const menuBounds = await sectionMenu.boundingBox();
+  expect(menuBounds?.x).toBeGreaterThan((workspaceBounds?.x ?? 0) + 1000);
+  expect(dashboardBounds?.x).toBeGreaterThan(menuBounds?.x ?? 0);
+  expect(dashboardBounds?.height).toBeGreaterThan(
+    (workspaceBounds?.height ?? 0) - 3,
+  );
+
+  await page.screenshot({ path: "/tmp/ovis-config-2k.png", fullPage: true });
 });
 
 test("edits, validates, saves, applies, and polls configuration", async ({
@@ -389,7 +452,7 @@ test("edits, validates, saves, applies, and polls configuration", async ({
     target_revision: "b929d204",
   });
   await expect(page.getByText("正在等待设备恢复连接")).toBeVisible();
-  await expect(page.getByText("设备重启中")).toBeVisible();
+  await expect(page.getByText("设备重启中").first()).toBeVisible();
   await expect(page.getByText("等待设备确认")).toBeVisible();
   await page.screenshot({
     path: "/tmp/ovis-config-reconnecting-desktop.png",
@@ -763,7 +826,7 @@ test("heartbeats only the selected device and stops after two failures", async (
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
-  await expect(page.getByText("设备在线")).toBeVisible();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
   await expect(page.getByText("设备连接已中断")).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText("操作异常")).toBeVisible();
   expect(requestsByHost.get("192.168.42.1")).toBe(4);
