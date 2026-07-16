@@ -361,12 +361,27 @@ test("scans with at most four requests and deduplicates device ids", async ({
 }) => {
   let activeRequests = 0;
   let maximumActiveRequests = 0;
+  let firstRequestedHost: string | null = null;
   const requestedHosts = new Set<string>();
 
+  await page.addInitScript(() => {
+    let permissionQueryCount = 0;
+    Object.defineProperty(navigator, "permissions", {
+      configurable: true,
+      value: {
+        query: async () => ({
+          state: permissionQueryCount++ === 0 ? "prompt" : "granted",
+        }),
+      },
+    });
+  });
+
   await page.route("**/api/v1/device/info", async (route) => {
+    expect(route.request().method()).toBe("GET");
     activeRequests += 1;
     maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
     const host = requestHost(route);
+    firstRequestedHost ??= host;
     requestedHosts.add(host);
     await new Promise((resolve) => setTimeout(resolve, 45));
     activeRequests -= 1;
@@ -405,6 +420,7 @@ test("scans with at most four requests and deduplicates device ids", async ({
   });
   expect(imageBottomGap).toBeGreaterThanOrEqual(14);
   expect(requestedHosts.size).toBe(16);
+  expect(firstRequestedHost).toBe("192.168.42.1");
   expect(maximumActiveRequests).toBeGreaterThan(1);
   expect(maximumActiveRequests).toBeLessThanOrEqual(4);
   const resultsLayout = await page.evaluate(() => {
@@ -425,6 +441,89 @@ test("scans with at most four requests and deduplicates device ids", async ({
   expect(resultsLayout.documentHeight).toBe(resultsLayout.viewportHeight);
   expect(resultsLayout.resultsOverflowY).toBe("auto");
   await page.screenshot({ path: "/tmp/ovis-results-desktop.png", fullPage: true });
+});
+
+test("reports an explicitly denied local network permission without scanning", async ({
+  page,
+}) => {
+  let deviceRequests = 0;
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "permissions", {
+      configurable: true,
+      value: { query: async () => ({ state: "denied" }) },
+    });
+  });
+  await page.route("**/api/v1/device/info", (route) => {
+    deviceRequests += 1;
+    return route.abort("blockedbyclient");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByText("已拒绝本地网络访问")).toBeVisible();
+  await expect(page.getByText("浏览器阻止了本地网络访问")).toHaveCount(0);
+  expect(deviceRequests).toBe(0);
+});
+
+test("reports browser blocking when every scan request fails immediately", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/device/info", (route) =>
+    route.abort("blockedbyclient"),
+  );
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByText("浏览器阻止了本地网络访问")).toBeVisible();
+  await expect(page.getByText("未找到 OVIS 设备")).toHaveCount(0);
+});
+
+test("reports a scan network error for non-immediate transport failures", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/device/info", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByText("本地网络扫描失败")).toBeVisible({
+    timeout: 8_000,
+  });
+  await expect(page.getByText("未找到 OVIS 设备")).toHaveCount(0);
+});
+
+test("validates and connects a manually entered device address", async ({
+  page,
+}) => {
+  let deviceRequests = 0;
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/device/info", async (route) => {
+    deviceRequests += 1;
+    if (requestHost(route) === "192.168.55.1") {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  const addressInput = page.getByLabel("手动输入设备 IP");
+  await addressInput.fill("999.168.42.1");
+  await page.locator(".manual-connect").getByRole("button", { name: "连接" }).click();
+  await expect(page.getByText("请输入有效的 IPv4 地址")).toBeVisible();
+  expect(deviceRequests).toBe(0);
+
+  await addressInput.fill("192.168.55.1");
+  await page.locator(".manual-connect").getByRole("button", { name: "连接" }).click();
+  await expect(page.getByText("正在验证设备地址")).toBeVisible();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
+  await expect(page.getByText("192.168.55.1:8080/api/v1")).toBeVisible();
+  expect(deviceRequests).toBe(1);
 });
 
 test("selects, confirms, connects, and disconnects locally", async ({ page }) => {
@@ -489,6 +588,32 @@ test("selects, confirms, connects, and disconnects locally", async ({ page }) =>
   await page.getByTitle("断开连接").click();
   await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
   await expect(page.getByText("搜索完成")).toBeVisible();
+});
+
+test("probes the last successful device address first on the next scan", async ({
+  page,
+}) => {
+  let recordingNextScan = false;
+  let firstHostOnNextScan: string | null = null;
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/device/info", (route) => {
+    const host = requestHost(route);
+    if (recordingNextScan) firstHostOnNextScan ??= host;
+    if (host === "192.168.44.1") return fulfillJson(route, deviceInfo);
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
+  await page.getByTitle("断开连接").click();
+
+  recordingNextScan = true;
+  await page.getByRole("button", { name: "重新搜索" }).click();
+  await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
+  expect(firstHostOnNextScan).toBe("192.168.44.1");
 });
 
 test("renders AI capabilities and keeps TPU features mutually exclusive", async ({
@@ -1003,7 +1128,7 @@ test("supports cancelling a scan and rescanning after an empty result", async ({
     if (returnDevice && requestHost(route) === "192.168.42.1") {
       return fulfillJson(route, deviceInfo);
     }
-    return route.abort("connectionrefused");
+    return fulfillJson(route, { ...deviceInfo, protocol: "not-ovis" });
   });
 
   await page.goto("./");
@@ -1014,7 +1139,7 @@ test("supports cancelling a scan and rescanning after an empty result", async ({
 
   delayRequests = false;
   await page.getByRole("button", { name: "搜索设备" }).click();
-  await expect(page.getByText("未发现 OVIS 设备")).toBeVisible();
+  await expect(page.getByText("未找到 OVIS 设备")).toBeVisible();
   returnDevice = true;
   await page.getByRole("button", { name: "重新搜索" }).click();
   await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
@@ -1047,15 +1172,12 @@ test("rejects a device whose identity changes before connection", async ({
 
 test("ignores incompatible responses during discovery", async ({ page }) => {
   await page.route("**/api/v1/device/info", (route) => {
-    if (requestHost(route) === "192.168.42.1") {
-      return fulfillJson(route, { ...deviceInfo, api_version: 2 });
-    }
-    return route.abort("connectionrefused");
+    return fulfillJson(route, { ...deviceInfo, api_version: 2 });
   });
   await page.goto("./");
   await page.getByRole("button", { name: "搜索设备" }).click();
 
-  await expect(page.getByText("未发现 OVIS 设备")).toBeVisible();
+  await expect(page.getByText("未找到 OVIS 设备")).toBeVisible();
   await expect(page.getByText("API 版本不兼容")).toHaveCount(0);
 });
 

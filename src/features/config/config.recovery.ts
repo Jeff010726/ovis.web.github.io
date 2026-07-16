@@ -58,8 +58,8 @@ export async function reconnectConfigDevice(
     originalFailures += 1;
 
     if (originalFailures >= ORIGINAL_FAILURES_BEFORE_SCAN) {
-      const devices = await discoverDevices(signal);
-      const matchingDevice = devices.find(
+      const report = await discoverDevices(signal, pending.api_base_url);
+      const matchingDevice = report.devices.find(
         (device) => device.info.device_id === pending.device_id,
       );
       if (matchingDevice) {

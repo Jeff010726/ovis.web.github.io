@@ -377,6 +377,62 @@ a:focus-visible {
   margin-inline: 0;
 }
 
+.manual-connect {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.manual-connect > label {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.manual-connect__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.manual-connect input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #343434;
+  border-radius: 0;
+  outline: 0;
+  color: var(--text);
+  background: #0b0b0b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.manual-connect input:focus {
+  border-color: #777;
+}
+
+.manual-connect input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.manual-connect .button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.manual-connect > small {
+  display: block;
+  margin-top: 7px;
+  color: var(--danger);
+  font-size: 9px;
+}
+
 .button--primary:hover {
   background: #d8d8d8;
 }
@@ -707,6 +763,22 @@ a:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.connector-error-stack {
+  width: min(650px, 100%);
+}
+
+.connector-error-stack .error-message {
+  width: 100%;
+}
+
+.connector-error-stack .manual-connect {
+  max-width: none;
+  margin-top: 14px;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--line);
+  background: #0d0d0d;
 }
 
 .error-message {
@@ -2539,6 +2611,14 @@ a:focus-visible {
 
   .error-message__actions .button {
     flex: 1;
+  }
+
+  .manual-connect__controls {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-connect .button {
+    width: 100%;
   }
 
   .discovery-heading {

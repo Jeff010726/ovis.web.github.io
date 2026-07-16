@@ -51,6 +51,9 @@ function App() {
             onCancelScan={connection.cancelScan}
             onSelectDevice={connection.selectDevice}
             onConnect={() => void connection.connect()}
+            onManualConnect={(ipAddress) =>
+              void connection.connectManualAddress(ipAddress)
+            }
             onDisconnect={connection.disconnect}
             onRescan={() => void connection.rescan()}
             onRetry={() => void connection.retry()}

@@ -5,6 +5,7 @@ import {
 } from "../config/config.session";
 import { reconnectConfigDevice } from "../config/config.recovery";
 import {
+  buildDeviceApiBaseUrl,
   DeviceConnectionError,
   discoverDevices,
   fetchDeviceInfo,
@@ -12,6 +13,7 @@ import {
 } from "./device.api";
 import type {
   DeviceConnectionErrorCode,
+  DiscoveryReport,
   DeviceState,
   DiscoveredDevice,
   OvisDeviceInfo,
@@ -20,11 +22,43 @@ import type {
 
 const HEARTBEAT_INTERVAL_MS = 3_000;
 const MAX_CONSECUTIVE_FAILURES = 2;
+const LAST_DEVICE_ADDRESS_KEY = "ovis_last_device_api_base_url";
 
 interface ConnectedTarget {
   apiBaseUrl: string;
   deviceId: string;
 }
+
+const readLastSuccessfulAddress = () => {
+  try {
+    return window.sessionStorage.getItem(LAST_DEVICE_ADDRESS_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeLastSuccessfulAddress = (apiBaseUrl: string) => {
+  try {
+    window.sessionStorage.setItem(LAST_DEVICE_ADDRESS_KEY, apiBaseUrl);
+  } catch {
+    // Discovery still works when session storage is unavailable.
+  }
+};
+
+const reportErrorCode = (
+  report: DiscoveryReport,
+): DeviceConnectionErrorCode | null => {
+  if (report.failureReason === "permission-denied") {
+    return "LOCAL_NETWORK_PERMISSION_DENIED";
+  }
+  if (report.failureReason === "browser-blocked") {
+    return "LOCAL_NETWORK_BLOCKED";
+  }
+  if (report.failureReason === "network-error") {
+    return "SCAN_NETWORK_ERROR";
+  }
+  return report.devices.length === 0 ? "NO_DEVICE_FOUND" : null;
+};
 
 export function useDeviceConnection(): UseDeviceConnection {
   const browserSupported = isSupportedBrowser();
@@ -42,11 +76,16 @@ export function useDeviceConnection(): UseDeviceConnection {
   const [applicationLocked, setApplicationLockedState] = useState(
     startupPending !== null,
   );
+  const [discoveryReport, setDiscoveryReport] =
+    useState<DiscoveryReport | null>(null);
   const applicationLockedRef = useRef(startupPending !== null);
   const operationGeneration = useRef(0);
   const scanController = useRef<AbortController | null>(null);
   const devicesRef = useRef<DiscoveredDevice[]>([]);
   const connectedTarget = useRef<ConnectedTarget | null>(null);
+  const lastSuccessfulAddress = useRef<string | null>(
+    readLastSuccessfulAddress(),
+  );
 
   const updateDevices = useCallback((nextDevices: DiscoveredDevice[]) => {
     devicesRef.current = nextDevices;
@@ -74,6 +113,8 @@ export function useDeviceConnection(): UseDeviceConnection {
       setError(null);
       setConnectedAt(new Date());
       connectedTarget.current = { apiBaseUrl, deviceId: info.device_id };
+      lastSuccessfulAddress.current = apiBaseUrl;
+      writeLastSuccessfulAddress(apiBaseUrl);
       setState("connected");
     },
     [updateDevices],
@@ -130,13 +171,36 @@ export function useDeviceConnection(): UseDeviceConnection {
     setDevice(null);
     setConnectedAt(null);
     setError(null);
+    setDiscoveryReport(null);
 
-    const foundDevices = await discoverDevices(controller.signal);
-    if (operationGeneration.current !== generation) return;
+    try {
+      const report = await discoverDevices(
+        controller.signal,
+        lastSuccessfulAddress.current,
+      );
+      if (operationGeneration.current !== generation) return;
 
-    scanController.current = null;
-    updateDevices(foundDevices);
-    setState("results");
+      scanController.current = null;
+      setDiscoveryReport(report);
+      updateDevices(report.devices);
+      const reportError = reportErrorCode(report);
+      if (reportError) {
+        setError(reportError);
+        setState("error");
+      } else {
+        setState("results");
+      }
+    } catch {
+      if (
+        operationGeneration.current !== generation ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+      scanController.current = null;
+      setError("SCAN_NETWORK_ERROR");
+      setState("error");
+    }
   }, [updateDevices]);
 
   const cancelScan = useCallback(() => {
@@ -186,6 +250,8 @@ export function useDeviceConnection(): UseDeviceConnection {
         apiBaseUrl: target.apiBaseUrl,
         deviceId: target.info.device_id,
       };
+      lastSuccessfulAddress.current = target.apiBaseUrl;
+      writeLastSuccessfulAddress(target.apiBaseUrl);
       setDevice(info);
       setConnectedAt(new Date());
       setState("connected");
@@ -199,6 +265,63 @@ export function useDeviceConnection(): UseDeviceConnection {
       );
     }
   }, [selectedDeviceId, updateDevices]);
+
+  const connectManualAddress = useCallback(
+    async (ipAddress: string) => {
+      if (applicationLockedRef.current) return;
+      const apiBaseUrl = buildDeviceApiBaseUrl(ipAddress);
+      if (!apiBaseUrl) {
+        setError("INVALID_RESPONSE");
+        setState("error");
+        return;
+      }
+
+      scanController.current?.abort();
+      const generation = operationGeneration.current + 1;
+      operationGeneration.current = generation;
+      setSelectedDeviceId(null);
+      setDevice(null);
+      setConnectedAt(null);
+      setError(null);
+      setState("connecting");
+
+      try {
+        const info = await fetchDeviceInfo(apiBaseUrl);
+        if (operationGeneration.current !== generation) return;
+        const manualDevice: DiscoveredDevice = {
+          apiBaseUrl,
+          info,
+          status: "online",
+        };
+        updateDevices([
+          manualDevice,
+          ...devicesRef.current.filter(
+            (entry) => entry.info.device_id !== info.device_id,
+          ),
+        ]);
+        setSelectedDeviceId(info.device_id);
+        connectedTarget.current = { apiBaseUrl, deviceId: info.device_id };
+        lastSuccessfulAddress.current = apiBaseUrl;
+        writeLastSuccessfulAddress(apiBaseUrl);
+        setDevice(info);
+        setConnectedAt(new Date());
+        setState("connected");
+      } catch (requestError) {
+        if (operationGeneration.current !== generation) return;
+        const code =
+          requestError instanceof DeviceConnectionError
+            ? requestError.code
+            : "NETWORK_ERROR";
+        setError(
+          code === "PERMISSION_DENIED"
+            ? "LOCAL_NETWORK_PERMISSION_DENIED"
+            : code,
+        );
+        setState("error");
+      }
+    },
+    [updateDevices],
+  );
 
   const disconnect = useCallback(() => {
     if (applicationLockedRef.current) return;
@@ -292,10 +415,12 @@ export function useDeviceConnection(): UseDeviceConnection {
     error,
     connectedAt,
     applicationLocked,
+    discoveryReport,
     scan,
     cancelScan,
     selectDevice,
     connect,
+    connectManualAddress,
     disconnect,
     rescan,
     retry,

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { ErrorMessage } from "../../components/ErrorMessage";
 import { DeviceConfiguration } from "../config/DeviceConfiguration";
-import { DEVICE_HOSTS } from "./device.api";
+import { buildDeviceApiBaseUrl, DEVICE_HOSTS } from "./device.api";
 import { getDeviceImage } from "./device.assets";
 import type {
   DeviceConnectionErrorCode,
@@ -35,6 +35,7 @@ interface DeviceConnectorProps {
   onCancelScan: () => void;
   onSelectDevice: (deviceId: string) => void;
   onConnect: () => void;
+  onManualConnect: (ipAddress: string) => void;
   onDisconnect: () => void;
   onRescan: () => void;
   onRetry: () => void;
@@ -50,6 +51,58 @@ const endpointLabel = (apiBaseUrl: string) => {
   }
 };
 
+interface ManualAddressFormProps {
+  onConnect: (ipAddress: string) => void;
+}
+
+function ManualAddressForm({ onConnect }: ManualAddressFormProps) {
+  const { t } = useTranslation();
+  const [ipAddress, setIpAddress] = useState("");
+  const [invalid, setInvalid] = useState(false);
+
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!buildDeviceApiBaseUrl(ipAddress)) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    onConnect(ipAddress.trim());
+  };
+
+  return (
+    <form className="manual-connect" onSubmit={submit} noValidate>
+      <label htmlFor="manual-device-ip">{t("discovery.manualAddress")}</label>
+      <div className="manual-connect__controls">
+        <input
+          id="manual-device-ip"
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          spellCheck={false}
+          value={ipAddress}
+          placeholder="192.168.42.1"
+          aria-invalid={invalid}
+          aria-describedby={invalid ? "manual-device-ip-error" : undefined}
+          onChange={(event) => {
+            setIpAddress(event.target.value);
+            if (invalid) setInvalid(false);
+          }}
+        />
+        <button className="button button--secondary" type="submit">
+          <Cable size={15} />
+          {t("discovery.manualConnect")}
+        </button>
+      </div>
+      {invalid && (
+        <small id="manual-device-ip-error" role="alert">
+          {t("discovery.invalidManualAddress")}
+        </small>
+      )}
+    </form>
+  );
+}
+
 export function DeviceConnector({
   state,
   devices,
@@ -62,6 +115,7 @@ export function DeviceConnector({
   onCancelScan,
   onSelectDevice,
   onConnect,
+  onManualConnect,
   onDisconnect,
   onRescan,
   onRetry,
@@ -87,12 +141,15 @@ export function DeviceConnector({
   if (state === "error" && error) {
     return (
       <div className="connector-state connector-state--error">
-        <ErrorMessage
-          code={error}
-          onRetry={onRetry}
-          retryLabel={selectedDevice ? t("common.reconnect") : t("common.rescan")}
-          onRescan={selectedDevice ? onRescan : undefined}
-        />
+        <div className="connector-error-stack">
+          <ErrorMessage
+            code={error}
+            onRetry={onRetry}
+            retryLabel={selectedDevice ? t("common.reconnect") : t("common.rescan")}
+            onRescan={selectedDevice ? onRescan : undefined}
+          />
+          <ManualAddressForm onConnect={onManualConnect} />
+        </div>
       </div>
     );
   }
@@ -131,15 +188,29 @@ export function DeviceConnector({
     );
   }
 
-  if (state === "connecting" && selectedDevice) {
+  if (state === "connecting") {
     return (
       <div className="connector-state connector-state--loading" aria-live="polite">
         <div className="loading-spinner" aria-hidden="true">
           <LoaderCircle size={28} />
         </div>
-        <h2>{t("discovery.connectingTitle", { name: selectedDevice.info.name })}</h2>
-        <p>{t("discovery.connectingDescription")}</p>
-        <small>{t("discovery.connectingTimeout", { endpoint: endpointLabel(selectedDevice.apiBaseUrl) })}</small>
+        <h2>
+          {selectedDevice
+            ? t("discovery.connectingTitle", { name: selectedDevice.info.name })
+            : t("discovery.manualConnectingTitle")}
+        </h2>
+        <p>
+          {selectedDevice
+            ? t("discovery.connectingDescription")
+            : t("discovery.manualConnectingDescription")}
+        </p>
+        {selectedDevice && (
+          <small>
+            {t("discovery.connectingTimeout", {
+              endpoint: endpointLabel(selectedDevice.apiBaseUrl),
+            })}
+          </small>
+        )}
       </div>
     );
   }
@@ -262,6 +333,7 @@ export function DeviceConnector({
             {t("discovery.scan")}
             <ArrowRight className="button__arrow" size={17} />
           </button>
+          <ManualAddressForm onConnect={onManualConnect} />
         </div>
         <Suspense
           fallback={

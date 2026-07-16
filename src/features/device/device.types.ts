@@ -10,6 +10,10 @@ export type DeviceState =
 export type DeviceConnectionErrorCode =
   | "UNSUPPORTED_BROWSER"
   | "PERMISSION_DENIED"
+  | "LOCAL_NETWORK_PERMISSION_DENIED"
+  | "LOCAL_NETWORK_BLOCKED"
+  | "SCAN_NETWORK_ERROR"
+  | "NO_DEVICE_FOUND"
   | "DEVICE_NOT_FOUND"
   | "CONNECTION_TIMEOUT"
   | "NETWORK_ERROR"
@@ -36,6 +40,22 @@ export interface DiscoveredDevice {
   status: "online" | "offline";
 }
 
+export type LocalNetworkPermissionState =
+  | "granted"
+  | "denied"
+  | "prompt"
+  | "unsupported";
+
+export interface DiscoveryReport {
+  devices: DiscoveredDevice[];
+  durationMs: number;
+  attempted: number;
+  timedOut: number;
+  immediateFailures: number;
+  permissionState: LocalNetworkPermissionState;
+  failureReason?: "permission-denied" | "browser-blocked" | "network-error";
+}
+
 export interface UseDeviceConnection {
   state: DeviceState;
   devices: DiscoveredDevice[];
@@ -44,10 +64,12 @@ export interface UseDeviceConnection {
   error: DeviceConnectionErrorCode | null;
   connectedAt: Date | null;
   applicationLocked: boolean;
+  discoveryReport: DiscoveryReport | null;
   scan(): Promise<void>;
   cancelScan(): void;
   selectDevice(deviceId: string): void;
   connect(): Promise<void>;
+  connectManualAddress(ipAddress: string): Promise<void>;
   disconnect(): void;
   rescan(): Promise<void>;
   retry(): Promise<void>;

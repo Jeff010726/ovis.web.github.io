@@ -51,6 +51,22 @@ export const resources = {
           title: "Local network access denied",
           detail: "Allow local network access in the browser site settings, then try again.",
         },
+        LOCAL_NETWORK_PERMISSION_DENIED: {
+          title: "Local network access was denied",
+          detail: "Allow local network access for this site in Chrome settings, then scan again.",
+        },
+        LOCAL_NETWORK_BLOCKED: {
+          title: "Browser blocked local network access",
+          detail: "Open this HTTPS page directly in the latest Chrome, not inside another site's frame, then scan again.",
+        },
+        SCAN_NETWORK_ERROR: {
+          title: "Local network scan failed",
+          detail: "The scan started but the local network requests failed. Check the active network connection and try again.",
+        },
+        NO_DEVICE_FOUND: {
+          title: "No OVIS devices found",
+          detail: "The scan completed normally, but no compatible OVIS device responded. Check device power and cabling.",
+        },
         DEVICE_NOT_FOUND: {
           title: "Selected device is unavailable",
           detail: "The device may be offline. Discover again or check the network connection.",
@@ -86,7 +102,7 @@ export const resources = {
       },
       discovery: {
         scanningTitle: "Discovering OVIS devices",
-        scanningDescription: "Probing {{count}} local network addresses concurrently",
+        scanningDescription: "Checking local network permission, then probing {{count}} device addresses",
         scanningTimeout: "Up to 1.5 seconds per address",
         cancelScan: "Cancel discovery",
         recoveringTitle: "Restoring the device connection",
@@ -110,6 +126,11 @@ export const resources = {
         idleTitle: "Discover OVIS Devices",
         idleDescription: "Scan the local device network · API v1",
         scan: "Discover devices",
+        manualAddress: "Manual device IP",
+        manualConnect: "Connect",
+        invalidManualAddress: "Enter a valid IPv4 address",
+        manualConnectingTitle: "Verifying the device address",
+        manualConnectingDescription: "Checking device identity and API compatibility before connecting",
       },
       model: {
         label: "Interactive 3D view of the OVIS camera module",
@@ -272,6 +293,10 @@ export const resources = {
       errors: {
         UNSUPPORTED_BROWSER: { title: "当前浏览器不受支持", detail: "请使用最新版 Chrome 或 Edge，并允许访问本地网络。" },
         PERMISSION_DENIED: { title: "本地网络访问被拒绝", detail: "请在浏览器站点设置中允许本地网络访问后重试。" },
+        LOCAL_NETWORK_PERMISSION_DENIED: { title: "已拒绝本地网络访问", detail: "请在 Chrome 站点设置中允许本网站访问本地网络，然后重新扫描。" },
+        LOCAL_NETWORK_BLOCKED: { title: "浏览器阻止了本地网络访问", detail: "请使用最新版 Chrome 直接打开此 HTTPS 页面，不要嵌入其他网站，然后重新扫描。" },
+        SCAN_NETWORK_ERROR: { title: "本地网络扫描失败", detail: "扫描已开始，但本地网络请求失败。请检查当前网络连接后重试。" },
+        NO_DEVICE_FOUND: { title: "未找到 OVIS 设备", detail: "扫描已正常完成，但没有兼容的 OVIS 设备响应。请检查设备供电和连接。" },
         DEVICE_NOT_FOUND: { title: "所选设备无响应", detail: "设备可能已离线，请重新搜索或检查网络连接。" },
         CONNECTION_TIMEOUT: { title: "连接设备超时", detail: "所选设备在 3 秒内未响应，请检查网络连接。" },
         NETWORK_ERROR: { title: "无法访问所选设备", detail: "请检查设备供电和本地网络连接后重试。" },
@@ -283,7 +308,7 @@ export const resources = {
       },
       discovery: {
         scanningTitle: "正在搜索 OVIS 设备",
-        scanningDescription: "并发探测 {{count}} 个本地网络地址",
+        scanningDescription: "检查本地网络权限后，探测 {{count}} 个设备地址",
         scanningTimeout: "每个地址最长等待 1.5 秒",
         cancelScan: "取消搜索",
         recoveringTitle: "正在恢复设备连接",
@@ -307,6 +332,11 @@ export const resources = {
         idleTitle: "搜索 OVIS 设备",
         idleDescription: "扫描本地设备网络 · API v1",
         scan: "搜索设备",
+        manualAddress: "手动输入设备 IP",
+        manualConnect: "连接",
+        invalidManualAddress: "请输入有效的 IPv4 地址",
+        manualConnectingTitle: "正在验证设备地址",
+        manualConnectingDescription: "连接前正在确认设备身份和 API 兼容性",
       },
       model: { label: "OVIS 相机模组 3D 展示", unavailable: "模型暂不可用" },
       config: {
