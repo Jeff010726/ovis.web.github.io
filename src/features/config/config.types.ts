@@ -11,6 +11,27 @@ export interface StreamCapability {
   profiles: VideoProfileCapability[];
 }
 
+export type TpuFeatureId =
+  | "person"
+  | "face"
+  | "human_pose"
+  | "object_tracking";
+
+export type ObjectTrackingSearchMethod = "color" | "fastsam";
+
+export interface AiFeatureCapability {
+  id: string;
+  name: string;
+  model: string;
+  search_methods?: ObjectTrackingSearchMethod[];
+}
+
+export interface AiCapabilities {
+  max_active_tpu_features: number;
+  features: AiFeatureCapability[];
+  motion_detection: boolean;
+}
+
 export interface ConfigCapabilities {
   schema_version: number;
   video: {
@@ -19,10 +40,11 @@ export interface ConfigCapabilities {
   };
   features: {
     osd: boolean;
-    person_detection: boolean;
-    face_detection: boolean;
-    motion_detection: boolean;
+    person_detection?: boolean;
+    face_detection?: boolean;
+    motion_detection?: boolean;
   };
+  ai?: AiCapabilities;
 }
 
 export interface StreamConfigValues {
@@ -47,6 +69,16 @@ export interface DeviceConfigValues {
     face: {
       enabled: boolean;
       threshold: number;
+    };
+    human_pose?: {
+      enabled: boolean;
+      threshold: number;
+    };
+    object_tracking?: {
+      enabled: boolean;
+      search_method: ObjectTrackingSearchMethod;
+      use_kalman: boolean;
+      score_threshold: number;
     };
     motion: {
       enabled: boolean;

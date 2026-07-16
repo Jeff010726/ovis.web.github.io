@@ -82,7 +82,7 @@ const secondDeviceInfo = {
 };
 
 const configCapabilities = {
-  schema_version: 1,
+  schema_version: 2,
   video: {
     main: {
       profiles: [
@@ -119,8 +119,24 @@ const configCapabilities = {
   },
   features: {
     osd: true,
-    person_detection: true,
-    face_detection: true,
+  },
+  ai: {
+    max_active_tpu_features: 1,
+    features: [
+      {
+        id: "person",
+        name: "人员检测",
+        model: "YOLOv8n Monitor Person",
+      },
+      { id: "face", name: "人脸检测", model: "SCRFD" },
+      { id: "human_pose", name: "人体姿态", model: "YOLOv8 Pose" },
+      {
+        id: "object_tracking",
+        name: "目标检测与跟踪",
+        model: "YOLOv8n + FearTrack",
+        search_methods: ["color", "fastsam"],
+      },
+    ],
     motion_detection: true,
   },
 };
@@ -141,6 +157,13 @@ const currentConfig = {
     detection: {
       person: { enabled: true, threshold: 0.7 },
       face: { enabled: false, threshold: 0.5 },
+      human_pose: { enabled: false, threshold: 0.65 },
+      object_tracking: {
+        enabled: false,
+        search_method: "color",
+        use_kalman: true,
+        score_threshold: 0.5,
+      },
       motion: { enabled: false, sensitivity: 50 },
     },
   },
@@ -414,6 +437,66 @@ test("selects, confirms, connects, and disconnects locally", async ({ page }) =>
   await page.getByTitle("断开连接").click();
   await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
   await expect(page.getByText("搜索完成")).toBeVisible();
+});
+
+test("renders AI capabilities and keeps TPU features mutually exclusive", async ({
+  page,
+}) => {
+  await mockConfigurationRead(page);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  const person = page.getByRole("switch", { name: "启用人员检测" });
+  const face = page.getByRole("switch", { name: "启用人脸检测" });
+  const pose = page.getByRole("switch", { name: "启用人体姿态检测" });
+  const tracking = page.getByRole("switch", { name: "启用目标检测与跟踪" });
+  const motion = page.getByRole("switch", { name: "启用移动检测" });
+
+  await expect(page.getByText("YOLOv8n Monitor Person")).toBeVisible();
+  await expect(page.getByText("YOLOv8 Pose")).toBeVisible();
+  await expect(page.getByText("YOLOv8n + FearTrack")).toBeVisible();
+  await expect(person).toBeChecked();
+
+  await pose.click();
+  await expect(pose).toBeChecked();
+  await expect(person).not.toBeChecked();
+  await expect(face).not.toBeChecked();
+
+  await tracking.click();
+  await expect(tracking).toBeChecked();
+  await expect(pose).not.toBeChecked();
+  await expect(person).not.toBeChecked();
+  await page.getByRole("combobox", { name: "搜索方式" }).selectOption("fastsam");
+  await expect(page.getByRole("combobox", { name: "搜索方式" })).toHaveValue(
+    "fastsam",
+  );
+
+  await motion.click();
+  await expect(motion).toBeChecked();
+  await expect(tracking).toBeChecked();
+  await expect(page.getByText("有未保存修改")).toBeVisible();
+});
+
+test("hides AI controls omitted by device capabilities", async ({ page }) => {
+  const limitedCapabilities = structuredClone(configCapabilities);
+  limitedCapabilities.ai.features = [configCapabilities.ai.features[1]];
+  limitedCapabilities.ai.motion_detection = false;
+  await discoverSingleDevice(page);
+  await page.route("**/api/v1/config/capabilities", (route) =>
+    fulfillJson(route, limitedCapabilities),
+  );
+  await page.route("**/api/v1/config", (route) =>
+    fulfillJson(route, currentConfig),
+  );
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByRole("switch", { name: "启用人脸检测" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "启用人员检测" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用人体姿态检测" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用目标检测与跟踪" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用移动检测" })).toHaveCount(0);
 });
 
 test(RESPONSIVE_CONFIG_TEST_TITLE, async ({
@@ -727,6 +810,11 @@ test("shows server validation errors without saving", async ({ page }) => {
           code: "OUT_OF_RANGE",
           message: "主码流码率超出允许范围",
         },
+        {
+          field: "detection",
+          code: "AI_FEATURE_CONFLICT",
+          message: "人员、人脸、人体姿态和目标跟踪最多只能启用一项",
+        },
       ],
       warnings: [],
       requires: [],
@@ -746,6 +834,9 @@ test("shows server validation errors without saving", async ({ page }) => {
 
   await expect(page.getByText("配置校验未通过")).toBeVisible();
   await expect(page.getByText("码率范围为 512-15000 Kbps")).toBeVisible();
+  await expect(
+    page.getByText("人员、人脸、人体姿态和目标跟踪最多只能启用一项"),
+  ).toBeVisible();
   expect(saveRequests).toBe(0);
   await expect(page.getByText("有未保存修改")).toBeVisible();
 });

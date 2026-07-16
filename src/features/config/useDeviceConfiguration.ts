@@ -32,6 +32,7 @@ import type {
   ConfigurationStatus,
   DeviceConfigDocument,
   DeviceConfigValues,
+  TpuFeatureId,
 } from "./config.types";
 
 const TASK_VERIFY_INTERVAL_MS = 1_500;
@@ -61,6 +62,26 @@ const delay = (milliseconds: number, signal: AbortSignal) =>
     }, milliseconds);
     signal.addEventListener("abort", abort, { once: true });
   });
+
+const TPU_FEATURE_IDS: TpuFeatureId[] = [
+  "person",
+  "face",
+  "human_pose",
+  "object_tracking",
+];
+
+const isTpuFeatureId = (value: string): value is TpuFeatureId =>
+  TPU_FEATURE_IDS.includes(value as TpuFeatureId);
+
+const tpuFeatureEnabled = (
+  values: DeviceConfigValues,
+  featureId: TpuFeatureId,
+) => {
+  if (featureId === "person" || featureId === "face") {
+    return values.detection[featureId].enabled;
+  }
+  return values.detection[featureId]?.enabled === true;
+};
 
 function validateDraftLocally(
   capabilities: ConfigCapabilities,
@@ -122,12 +143,27 @@ function validateDraftLocally(
     validateStream("video.sub", values.video.sub, capabilities.video.sub.profiles);
   }
 
-  const thresholdFields = [
-    ["detection.person.threshold", values.detection.person.threshold],
-    ["detection.face.threshold", values.detection.face.threshold],
-  ] as const;
+  const thresholdFields: Array<[string, number | undefined]> = [];
+  (capabilities.ai?.features ?? []).forEach((feature) => {
+    if (feature.id === "person" || feature.id === "face") {
+      thresholdFields.push([
+        `detection.${feature.id}.threshold`,
+        values.detection[feature.id].threshold,
+      ]);
+    } else if (feature.id === "human_pose") {
+      thresholdFields.push([
+        "detection.human_pose.threshold",
+        values.detection.human_pose?.threshold,
+      ]);
+    } else if (feature.id === "object_tracking") {
+      thresholdFields.push([
+        "detection.object_tracking.score_threshold",
+        values.detection.object_tracking?.score_threshold,
+      ]);
+    }
+  });
   thresholdFields.forEach(([field, value]) => {
-    if (!Number.isFinite(value) || value < 0 || value > 1) {
+    if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1) {
       errors.push({
         field,
         code: "OUT_OF_RANGE",
@@ -136,14 +172,30 @@ function validateDraftLocally(
     }
   });
   if (
-    !Number.isFinite(values.detection.motion.sensitivity) ||
-    values.detection.motion.sensitivity < 0 ||
-    values.detection.motion.sensitivity > 100
+    capabilities.ai?.motion_detection &&
+    (!Number.isFinite(values.detection.motion.sensitivity) ||
+      (values.detection.motion.sensitivity < 0 ||
+        values.detection.motion.sensitivity > 100))
   ) {
     errors.push({
       field: "detection.motion.sensitivity",
       code: "OUT_OF_RANGE",
       message: i18n.t("config.validation.sensitivityRange"),
+    });
+  }
+
+  const activeTpuFeatures = (capabilities.ai?.features ?? [])
+    .map((feature) => feature.id)
+    .filter(isTpuFeatureId)
+    .filter((featureId) => tpuFeatureEnabled(values, featureId));
+  if (
+    activeTpuFeatures.length >
+    (capabilities.ai?.max_active_tpu_features ?? 0)
+  ) {
+    errors.push({
+      field: "detection",
+      code: "AI_FEATURE_CONFLICT",
+      message: i18n.t("config.validation.aiFeatureConflict"),
     });
   }
   return errors;

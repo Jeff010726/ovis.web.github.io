@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ImageOff,
   LoaderCircle,
+  PersonStanding,
   RefreshCw,
   RotateCcw,
   Save,
@@ -13,6 +14,7 @@ import {
   Settings2,
   Unplug,
   Video,
+  Waypoints,
   Wifi,
   X,
 } from "lucide-react";
@@ -22,9 +24,12 @@ import type {
   OvisDeviceInfo,
 } from "../device/device.types";
 import type {
+  AiFeatureCapability,
   ConfigIssue,
   DeviceConfigValues,
+  ObjectTrackingSearchMethod,
   StreamConfigValues,
+  TpuFeatureId,
   VideoProfileCapability,
 } from "./config.types";
 import { useDeviceConfiguration } from "./useDeviceConfiguration";
@@ -215,6 +220,7 @@ function StreamEditor({
 interface DetectionRowProps {
   icon: React.ReactNode;
   title: string;
+  detail?: string;
   supported: boolean;
   enabled: boolean;
   value: number;
@@ -231,6 +237,7 @@ interface DetectionRowProps {
 function DetectionRow({
   icon,
   title,
+  detail,
   supported,
   enabled,
   value,
@@ -251,6 +258,7 @@ function DetectionRow({
         <div>
           <strong>{title}</strong>
           <small>
+            {detail && <>{detail} · </>}
             {supported
               ? enabled
                 ? t("common.enabled")
@@ -281,6 +289,101 @@ function DetectionRow({
     </div>
   );
 }
+
+interface ObjectTrackingRowProps {
+  capability: AiFeatureCapability;
+  values: NonNullable<DeviceConfigValues["detection"]["object_tracking"]>;
+  disabled: boolean;
+  onToggle: (checked: boolean) => void;
+  onSearchMethod: (method: ObjectTrackingSearchMethod) => void;
+  onKalman: (enabled: boolean) => void;
+  onScoreThreshold: (value: number) => void;
+}
+
+function ObjectTrackingRow({
+  capability,
+  values,
+  disabled,
+  onToggle,
+  onSearchMethod,
+  onKalman,
+  onScoreThreshold,
+}: ObjectTrackingRowProps) {
+  const { t } = useTranslation();
+  const searchMethods = capability.search_methods ?? [];
+
+  return (
+    <div className="feature-row feature-row--tracking">
+      <div className="feature-row__identity">
+        <span aria-hidden="true"><Waypoints size={17} /></span>
+        <div>
+          <strong>{t("config.detection.objectTracking")}</strong>
+          <small>
+            {capability.model} · {values.enabled ? t("common.enabled") : t("common.disabled")}
+          </small>
+        </div>
+      </div>
+      <div className="tracking-controls">
+        <label className="tracking-control tracking-control--method">
+          <span>{t("config.detection.searchMethod")}</span>
+          <select
+            value={values.search_method}
+            disabled={disabled || !values.enabled || searchMethods.length === 0}
+            onChange={(event) =>
+              onSearchMethod(event.target.value as ObjectTrackingSearchMethod)
+            }
+          >
+            {searchMethods.map((method) => (
+              <option value={method} key={method}>
+                {method === "fastsam"
+                  ? t("config.detection.searchFastsam")
+                  : t("config.detection.searchColor")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="feature-row__range">
+          <span>{t("config.detection.scoreThreshold")}</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={values.score_threshold}
+            disabled={disabled || !values.enabled}
+            onChange={(event) => onScoreThreshold(Number(event.target.value))}
+          />
+          <output>{values.score_threshold.toFixed(2)}</output>
+        </label>
+        <div className="tracking-control tracking-control--kalman">
+          <span>{t("config.detection.kalmanFilter")}</span>
+          <Toggle
+            checked={values.use_kalman}
+            disabled={disabled || !values.enabled}
+            label={t("config.detection.useKalman")}
+            onChange={onKalman}
+          />
+        </div>
+      </div>
+      <Toggle
+        checked={values.enabled}
+        disabled={disabled}
+        label={t("config.detection.enableObjectTracking")}
+        onChange={onToggle}
+      />
+    </div>
+  );
+}
+
+const TPU_FEATURE_IDS: TpuFeatureId[] = [
+  "person",
+  "face",
+  "human_pose",
+  "object_tracking",
+];
+
+const isTpuFeatureId = (value: string): value is TpuFeatureId =>
+  TPU_FEATURE_IDS.includes(value as TpuFeatureId);
 
 type ConfigSectionId = "video" | "detection";
 
@@ -348,8 +451,14 @@ export function DeviceConfiguration({
     if (issue.code === "INVALID_BITRATE") {
       return t("config.validation.invalidBitrate");
     }
+    if (issue.code === "AI_FEATURE_CONFLICT") {
+      return t("config.validation.aiFeatureConflict");
+    }
     if (issue.code === "OUT_OF_RANGE") {
-      if (issue.field.endsWith(".threshold")) {
+      if (
+        issue.field.endsWith(".threshold") ||
+        issue.field.endsWith(".score_threshold")
+      ) {
         return t("config.validation.thresholdRange");
       }
       if (issue.field.endsWith(".sensitivity")) {
@@ -426,70 +535,48 @@ export function DeviceConfiguration({
     setActiveSection(sectionId);
   };
 
-  const detectionRows = useMemo(() => {
-    if (!configuration.capabilities || !configuration.draft) return [];
-    const { capabilities, draft } = configuration;
-    return [
-      {
-        key: "person",
-        icon: <Settings2 size={17} />,
-        title: t("config.detection.person"),
-        supported: capabilities.features.person_detection,
-        enabled: draft.detection.person.enabled,
-        value: draft.detection.person.threshold,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        valueLabel: draft.detection.person.threshold.toFixed(2),
-        rangeLabel: t("config.detection.threshold"),
-        toggleLabel: t("config.detection.enablePerson"),
-      },
-      {
-        key: "face",
-        icon: <ScanFace size={17} />,
-        title: t("config.detection.face"),
-        supported: capabilities.features.face_detection,
-        enabled: draft.detection.face.enabled,
-        value: draft.detection.face.threshold,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        valueLabel: draft.detection.face.threshold.toFixed(2),
-        rangeLabel: t("config.detection.threshold"),
-        toggleLabel: t("config.detection.enableFace"),
-      },
-      {
-        key: "motion",
-        icon: <Activity size={17} />,
-        title: t("config.detection.motion"),
-        supported: capabilities.features.motion_detection,
-        enabled: draft.detection.motion.enabled,
-        value: draft.detection.motion.sensitivity,
-        min: 0,
-        max: 100,
-        step: 1,
-        valueLabel: `${draft.detection.motion.sensitivity}`,
-        rangeLabel: t("config.detection.sensitivity"),
-        toggleLabel: t("config.detection.enableMotion"),
-      },
-    ] as const;
-  }, [configuration, t]);
+  const tpuCapabilities = useMemo(
+    () =>
+      (configuration.capabilities?.ai?.features ?? []).filter(
+        (feature): feature is AiFeatureCapability & { id: TpuFeatureId } =>
+          isTpuFeatureId(feature.id),
+      ),
+    [configuration.capabilities],
+  );
 
-  const updateDetection = (
-    key: "person" | "face" | "motion",
-    property: "enabled" | "value",
-    value: boolean | number,
+  const setTpuEnabled = (featureId: TpuFeatureId, enabled: boolean) => {
+    configuration.updateDraft((draft) => {
+      if (
+        enabled &&
+        configuration.capabilities?.ai?.max_active_tpu_features === 1
+      ) {
+        draft.detection.person.enabled = false;
+        draft.detection.face.enabled = false;
+        if (draft.detection.human_pose) {
+          draft.detection.human_pose.enabled = false;
+        }
+        if (draft.detection.object_tracking) {
+          draft.detection.object_tracking.enabled = false;
+        }
+      }
+
+      if (featureId === "person" || featureId === "face") {
+        draft.detection[featureId].enabled = enabled;
+      } else if (draft.detection[featureId]) {
+        draft.detection[featureId].enabled = enabled;
+      }
+    });
+  };
+
+  const setTpuThreshold = (
+    featureId: "person" | "face" | "human_pose",
+    value: number,
   ) => {
     configuration.updateDraft((draft) => {
-      if (key === "motion") {
-        if (property === "enabled") draft.detection.motion.enabled = value as boolean;
-        else draft.detection.motion.sensitivity = value as number;
-      } else if (key === "person") {
-        if (property === "enabled") draft.detection.person.enabled = value as boolean;
-        else draft.detection.person.threshold = value as number;
-      } else {
-        if (property === "enabled") draft.detection.face.enabled = value as boolean;
-        else draft.detection.face.threshold = value as number;
+      if (featureId === "person" || featureId === "face") {
+        draft.detection[featureId].threshold = value;
+      } else if (draft.detection.human_pose) {
+        draft.detection.human_pose.threshold = value;
       }
     });
   };
@@ -785,18 +872,127 @@ export function DeviceConfiguration({
                           }
                         />
                       </div>
-                      {detectionRows.map(({ key, ...row }) => (
+                      {tpuCapabilities.map((capability) => {
+                        const draft = configuration.draft;
+                        if (!draft) return null;
+                        if (capability.id === "object_tracking") {
+                          const tracking = draft.detection.object_tracking;
+                          if (!tracking) return null;
+                          return (
+                            <ObjectTrackingRow
+                              key={capability.id}
+                              capability={capability}
+                              values={tracking}
+                              disabled={
+                                (configuration.capabilities?.ai
+                                  ?.max_active_tpu_features ?? 0) < 1
+                              }
+                              onToggle={(checked) =>
+                                setTpuEnabled(capability.id, checked)
+                              }
+                              onSearchMethod={(method) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.detection.object_tracking) {
+                                    draft.detection.object_tracking.search_method = method;
+                                  }
+                                })
+                              }
+                              onKalman={(enabled) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.detection.object_tracking) {
+                                    draft.detection.object_tracking.use_kalman = enabled;
+                                  }
+                                })
+                              }
+                              onScoreThreshold={(value) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.detection.object_tracking) {
+                                    draft.detection.object_tracking.score_threshold = value;
+                                  }
+                                })
+                              }
+                            />
+                          );
+                        }
+
+                        const values =
+                          capability.id === "human_pose"
+                            ? draft.detection.human_pose
+                            : draft.detection[capability.id];
+                        if (!values) return null;
+                        const title =
+                          capability.id === "person"
+                            ? t("config.detection.person")
+                            : capability.id === "face"
+                              ? t("config.detection.face")
+                              : t("config.detection.humanPose");
+                        const toggleLabel =
+                          capability.id === "person"
+                            ? t("config.detection.enablePerson")
+                            : capability.id === "face"
+                              ? t("config.detection.enableFace")
+                              : t("config.detection.enableHumanPose");
+                        const icon =
+                          capability.id === "person" ? (
+                            <Settings2 size={17} />
+                          ) : capability.id === "face" ? (
+                            <ScanFace size={17} />
+                          ) : (
+                            <PersonStanding size={17} />
+                          );
+
+                        return (
+                          <DetectionRow
+                            key={capability.id}
+                            icon={icon}
+                            title={title}
+                            detail={capability.model}
+                            supported
+                            enabled={values.enabled}
+                            value={values.threshold}
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            valueLabel={values.threshold.toFixed(2)}
+                            rangeLabel={t("config.detection.threshold")}
+                            toggleLabel={toggleLabel}
+                            onToggle={(checked) =>
+                              setTpuEnabled(capability.id, checked)
+                            }
+                            onValue={(value) =>
+                              setTpuThreshold(
+                                capability.id as "person" | "face" | "human_pose",
+                                value,
+                              )
+                            }
+                          />
+                        );
+                      })}
+                      {configuration.capabilities.ai?.motion_detection && (
                         <DetectionRow
-                          key={key}
-                          {...row}
+                          icon={<Activity size={17} />}
+                          title={t("config.detection.motion")}
+                          supported
+                          enabled={configuration.draft.detection.motion.enabled}
+                          value={configuration.draft.detection.motion.sensitivity}
+                          min={0}
+                          max={100}
+                          step={1}
+                          valueLabel={`${configuration.draft.detection.motion.sensitivity}`}
+                          rangeLabel={t("config.detection.sensitivity")}
+                          toggleLabel={t("config.detection.enableMotion")}
                           onToggle={(checked) =>
-                            updateDetection(key, "enabled", checked)
+                            configuration.updateDraft((draft) => {
+                              draft.detection.motion.enabled = checked;
+                            })
                           }
                           onValue={(value) =>
-                            updateDetection(key, "value", value)
+                            configuration.updateDraft((draft) => {
+                              draft.detection.motion.sensitivity = value;
+                            })
                           }
                         />
-                      ))}
+                      )}
                     </div>
                   </section>
                 </fieldset>
