@@ -265,6 +265,20 @@ test(RESPONSIVE_IDLE_TEST_TITLE, async ({ page }) => {
   );
   await page.screenshot({ path: "/tmp/ovis-idle-1080-en.png", fullPage: true });
 
+  await page.setViewportSize({ width: 2048, height: 1024 });
+  const idleLayout = page.locator(".idle-layout");
+  const idleLayoutBounds = await idleLayout.boundingBox();
+  expect(idleLayoutBounds?.width).toBeLessThanOrEqual(1541);
+  expect(idleLayoutBounds?.x).toBeGreaterThan(200);
+  expect(
+    Math.abs(
+      (idleLayoutBounds?.x ?? 0) * 2 +
+        (idleLayoutBounds?.width ?? 0) -
+        2048,
+    ),
+  ).toBeLessThan(2);
+  await page.screenshot({ path: "/tmp/ovis-idle-2048.png", fullPage: true });
+
   await page.setViewportSize({ width: 2200, height: 1238 });
   const workspaceIntermediate = await workspace.boundingBox();
   const intermediateRatio = 2200 / 1920;

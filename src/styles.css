@@ -99,6 +99,7 @@ a:focus-visible {
   margin-right: 16px;
   display: block;
   object-fit: contain;
+  filter: grayscale(1) brightness(0) invert(1);
 }
 
 .brand__wordmark {
@@ -300,11 +301,12 @@ a:focus-visible {
 }
 
 .idle-layout {
-  width: 100%;
+  width: min(100%, 1540px);
+  margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(280px, 0.78fr) minmax(420px, 1.22fr);
+  grid-template-columns: minmax(280px, 0.72fr) minmax(420px, 1.28fr);
   align-items: center;
-  gap: clamp(28px, 5vw, 72px);
+  gap: clamp(36px, 4.5vw, 88px);
 }
 
 .idle-copy {
@@ -415,7 +417,7 @@ a:focus-visible {
 .ovis-model-viewer,
 .model-loading {
   width: 100%;
-  height: clamp(410px, 56vh, 700px);
+  height: clamp(440px, 64vh, 760px);
 }
 
 .ovis-model-viewer {
@@ -2033,10 +2035,6 @@ a:focus-visible {
 }
 
 @media (min-width: 2200px) {
-  .workspace-panel:not(.workspace-panel--configuration) .idle-layout {
-    grid-template-columns: minmax(374px, 0.78fr) minmax(560px, 1.22fr);
-  }
-
   .workspace-panel:not(.workspace-panel--configuration) .idle-copy {
     max-width: 560px;
   }
