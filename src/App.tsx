@@ -16,6 +16,11 @@ function App() {
     >
       <header className="app-header">
         <a className="brand" href="./" aria-label={t("app.home")}>
+          <img
+            className="brand__company-logo"
+            src={`${import.meta.env.BASE_URL}images/aimorelogy-logo.png`}
+            alt=""
+          />
           <span className="brand__wordmark">OVIS</span>
           <span className="brand__divider" />
           <span className="brand__product">DEVICE MANAGER</span>
@@ -30,12 +35,6 @@ function App() {
       </header>
 
       <main className="main-content">
-        {!isConfigurationView && (
-          <div className="page-heading">
-            <h1>{t("app.connectionTitle")}</h1>
-          </div>
-        )}
-
         <section
           className={`workspace-panel ${isConfigurationView ? "workspace-panel--configuration" : ""}`}
           aria-label={t("app.workspace")}

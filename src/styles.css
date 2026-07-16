@@ -50,9 +50,11 @@ a:focus-visible {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   display: grid;
   grid-template-rows: 72px 1fr;
+  overflow: hidden;
 }
 
 .app-shell--configuration {
@@ -73,6 +75,8 @@ a:focus-visible {
 .app-header {
   height: 72px;
   padding: 0 clamp(20px, 4vw, 64px);
+  position: relative;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -87,6 +91,14 @@ a:focus-visible {
   color: var(--text);
   text-decoration: none;
   min-width: 0;
+}
+
+.brand__company-logo {
+  width: auto;
+  height: 28px;
+  margin-right: 16px;
+  display: block;
+  object-fit: contain;
 }
 
 .brand__wordmark {
@@ -219,9 +231,11 @@ a:focus-visible {
 }
 
 .main-content {
-  width: min(calc(100% - 48px), clamp(1280px, 66.667vw, 1707px));
-  margin: 0 auto;
-  padding: clamp(44px, 7vh, 100px) 0 64px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
 }
 
 .page-heading {
@@ -236,12 +250,15 @@ a:focus-visible {
 }
 
 .workspace-panel {
-  min-height: clamp(520px, 27.083vw, 693px);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   position: relative;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 0;
+  border-top: 1px solid var(--line);
   background: rgba(13, 13, 13, 0.96);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+  box-shadow: none;
 }
 
 .workspace-panel::before,
@@ -271,7 +288,8 @@ a:focus-visible {
 
 .connector-state {
   min-width: 0;
-  min-height: clamp(518px, calc(27.083vw - 2px), 691px);
+  height: 100%;
+  min-height: 0;
   padding: clamp(30px, 5vw, 58px);
   position: relative;
 }
@@ -397,7 +415,7 @@ a:focus-visible {
 .ovis-model-viewer,
 .model-loading {
   width: 100%;
-  height: clamp(410px, 21.354vw, 547px);
+  height: clamp(410px, 56vh, 700px);
 }
 
 .ovis-model-viewer {
@@ -475,7 +493,7 @@ a:focus-visible {
 }
 
 .connector-state--results {
-  min-height: 518px;
+  min-height: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -506,7 +524,8 @@ a:focus-visible {
 
 .device-results {
   flex: 1;
-  max-height: 490px;
+  min-height: 0;
+  max-height: none;
   padding: 24px clamp(26px, 4vw, 46px);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 310px));
@@ -1939,6 +1958,11 @@ a:focus-visible {
     font-size: clamp(19px, 0.938vw, 24px);
   }
 
+  .brand__company-logo {
+    height: clamp(28px, 1.367vw, 35px);
+    margin-right: clamp(16px, 0.781vw, 20px);
+  }
+
   .brand__product,
   .status-indicator {
     font-size: clamp(10px, 0.508vw, 13px);
@@ -2174,6 +2198,12 @@ a:focus-visible {
 @keyframes status-pulse { 50% { opacity: 0.35; } }
 
 @media (max-width: 820px) {
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .app-shell--configuration {
     height: auto;
     min-height: 100vh;
@@ -2181,15 +2211,16 @@ a:focus-visible {
   }
 
   .app-shell--configuration .main-content {
-    width: min(100% - 28px, 680px);
+    width: 100%;
     height: auto;
-    margin: 0 auto;
-    padding: 18px 0 48px;
+    margin: 0;
+    padding: 0;
   }
 
   .main-content {
-    width: min(100% - 28px, 680px);
-    padding-top: 42px;
+    width: 100%;
+    height: auto;
+    padding: 0;
   }
 
   .idle-layout {
@@ -2221,6 +2252,15 @@ a:focus-visible {
   .connector-state,
   .device-summary {
     min-height: 560px;
+  }
+
+  .workspace-panel {
+    height: auto;
+    border-width: 1px 0 0;
+  }
+
+  .connector-state {
+    height: auto;
   }
 
   .device-results {
@@ -2294,7 +2334,7 @@ a:focus-visible {
     height: auto;
     max-height: none;
     overflow: visible;
-    border-width: 1px;
+    border-width: 1px 0 0;
   }
 
   .workspace-panel--configuration .configuration-page {
@@ -2440,14 +2480,19 @@ a:focus-visible {
     display: none;
   }
 
+  .brand__company-logo {
+    height: 22px;
+    margin-right: 9px;
+  }
+
   .status-indicator {
     margin: 0;
     padding: 0 9px;
   }
 
   .main-content {
-    width: calc(100% - 20px);
-    padding: 34px 0 40px;
+    width: 100%;
+    padding: 0;
   }
 
   .page-heading {

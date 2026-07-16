@@ -213,7 +213,13 @@ async function mockConfigurationRead(page: Page) {
 test("shows the initial discovery workspace", async ({ page }) => {
   await page.goto("./");
 
-  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备连接" })).toHaveCount(0);
+  const companyLogo = page.locator(".brand__company-logo");
+  await expect(companyLogo).toBeVisible();
+  await expect(companyLogo).toHaveAttribute(
+    "src",
+    /images\/aimorelogy-logo\.png$/,
+  );
   await expect(page.getByRole("button", { name: "搜索设备" })).toBeVisible();
   await expect(page.getByText("等待搜索")).toBeVisible();
   await expect(page.getByText("参数配置")).toHaveCount(0);
@@ -224,7 +230,7 @@ test(LANGUAGE_TEST_TITLE, async ({ page }) => {
   await page.route("**/models/*.glb", (route) => route.abort("blockedbyclient"));
   await page.goto("./");
 
-  await expect(page.getByRole("heading", { name: "Device Connection" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Device Connection" })).toHaveCount(0);
   await expect(page.getByText("Ready to discover")).toBeVisible();
   const languageButton = page.getByRole("button", { name: "Language" });
   await languageButton.click();
@@ -232,10 +238,10 @@ test(LANGUAGE_TEST_TITLE, async ({ page }) => {
     .getByRole("menuitemradio", { name: "Simplified Chinese" })
     .click();
 
-  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备连接" })).toHaveCount(0);
   await expect(page.getByText("等待搜索")).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "设备连接" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备连接" })).toHaveCount(0);
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
 });
 
@@ -250,8 +256,10 @@ test(RESPONSIVE_IDLE_TEST_TITLE, async ({ page }) => {
   ).toHaveAttribute("data-model-status", "ready", { timeout: 25_000 });
 
   const workspace = page.locator(".workspace-panel");
-  const heading = page.getByRole("heading", { name: "Device Connection" });
+  const heading = page.getByRole("heading", { name: "Discover OVIS Devices" });
   const workspace1080 = await workspace.boundingBox();
+  expect(workspace1080?.x).toBeCloseTo(0, 0);
+  expect(workspace1080?.width).toBeCloseTo(1920, 0);
   const headingSize1080 = await heading.evaluate((element) =>
     Number.parseFloat(getComputedStyle(element).fontSize),
   );
@@ -281,6 +289,13 @@ test(RESPONSIVE_IDLE_TEST_TITLE, async ({ page }) => {
     4 / 3,
     1,
   );
+  expect(workspace2K?.x).toBeCloseTo(0, 0);
+  expect(workspace2K?.width).toBeCloseTo(2560, 0);
+  const pageHeight = await page.evaluate(() => ({
+    document: document.documentElement.scrollHeight,
+    viewport: document.documentElement.clientHeight,
+  }));
+  expect(pageHeight.document).toBe(pageHeight.viewport);
   expect(headingSize2K / headingSize1080).toBeCloseTo(4 / 3, 1);
   await page.screenshot({ path: "/tmp/ovis-idle-2k-en.png", fullPage: true });
 });
@@ -378,6 +393,23 @@ test("scans with at most four requests and deduplicates device ids", async ({
   expect(requestedHosts.size).toBe(16);
   expect(maximumActiveRequests).toBeGreaterThan(1);
   expect(maximumActiveRequests).toBeLessThanOrEqual(4);
+  const resultsLayout = await page.evaluate(() => {
+    const workspace = document.querySelector(".workspace-panel")!;
+    return {
+      x: workspace.getBoundingClientRect().x,
+      width: workspace.getBoundingClientRect().width,
+      viewportWidth: document.documentElement.clientWidth,
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: document.documentElement.clientHeight,
+      resultsOverflowY: getComputedStyle(
+        document.querySelector(".device-results")!,
+      ).overflowY,
+    };
+  });
+  expect(resultsLayout.x).toBe(0);
+  expect(resultsLayout.width).toBe(resultsLayout.viewportWidth);
+  expect(resultsLayout.documentHeight).toBe(resultsLayout.viewportHeight);
+  expect(resultsLayout.resultsOverflowY).toBe("auto");
   await page.screenshot({ path: "/tmp/ovis-results-desktop.png", fullPage: true });
 });
 
