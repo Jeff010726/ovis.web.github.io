@@ -1,7 +1,7 @@
 import i18n from "../../i18n";
 
 const OVIS_VENDOR_ID = 0x3346;
-const OVIS_PRODUCT_ID = 0x100d;
+const OVIS_PRODUCT_ID = 0x100e;
 const OVIS_INTERFACE_CLASS = 0xff;
 const OVIS_INTERFACE_SUBCLASS = 0x4f;
 const OVIS_INTERFACE_PROTOCOL = 0x01;
