@@ -5,6 +5,7 @@ import type {
   LocalNetworkPermissionState,
   OvisDeviceInfo,
 } from "./device.types";
+import { getRememberedOvisDeviceHosts } from "./webusb.api";
 
 const CONNECTION_TIMEOUT_MS = 3_000;
 const SCAN_TIMEOUT_MS = 1_500;
@@ -216,8 +217,12 @@ export function buildDeviceApiBaseUrl(ipAddress: string): string | null {
 
 function prioritizedApiBaseUrls(preferredApiBaseUrl?: string | null) {
   const preferred = preferredApiBaseUrl?.replace(/\/$/, "");
+  const remembered = getRememberedOvisDeviceHosts().map(
+    (host) => `http://${host}:8080/api/v1`,
+  );
   return [
-    ...(preferred && DEVICE_API_BASE_URLS.includes(preferred) ? [preferred] : []),
+    ...(preferred ? [preferred] : []),
+    ...remembered,
     DEVICE_API_BASE_URLS[0],
     ...DEVICE_API_BASE_URLS.slice(1),
   ].filter((url, index, urls) => urls.indexOf(url) === index);

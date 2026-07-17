@@ -14,6 +14,7 @@ import { ErrorMessage } from "../../components/ErrorMessage";
 import { DeviceConfiguration } from "../config/DeviceConfiguration";
 import { buildDeviceApiBaseUrl, DEVICE_HOSTS } from "./device.api";
 import { getDeviceImage } from "./device.assets";
+import { UsbProvisioning } from "./UsbProvisioning";
 import type {
   DeviceConnectionErrorCode,
   DeviceState,
@@ -328,6 +329,7 @@ export function DeviceConnector({
         <div className="idle-copy">
           <h2>{t("discovery.idleTitle")}</h2>
           <p>{t("discovery.idleDescription")}</p>
+          <UsbProvisioning onProvisioned={onScan} />
           <button className="button button--primary" type="button" onClick={onScan}>
             <Search size={18} />
             {t("discovery.scan")}
