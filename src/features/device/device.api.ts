@@ -1,7 +1,7 @@
 import type {
   DeviceConnectionErrorCode,
   DiscoveryReport,
-  DiscoveredDevice,
+  InitializedDevice,
   LocalNetworkPermissionState,
   OvisDeviceInfo,
 } from "./device.types";
@@ -9,13 +9,13 @@ import { getRememberedOvisDeviceHosts } from "./webusb.api";
 
 const CONNECTION_TIMEOUT_MS = 3_000;
 const SCAN_TIMEOUT_MS = 1_500;
-const MAX_SCAN_CONCURRENCY = 4;
+const MAX_SCAN_CONCURRENCY = 16;
 const SUPPORTED_API_VERSION = 1;
 const IMMEDIATE_FAILURE_THRESHOLD_MS = 300;
 
 export const DEVICE_HOSTS = Array.from(
-  { length: 16 },
-  (_, index) => `192.168.${42 + index}.1`,
+  { length: 256 },
+  (_, index) => `192.168.${index}.1`,
 );
 
 export const DEVICE_API_BASE_URLS = DEVICE_HOSTS.map(
@@ -29,7 +29,7 @@ interface FetchDeviceInfoOptions {
 
 interface DiscoveryAttempt {
   apiBaseUrl: string;
-  device?: DiscoveredDevice;
+  device?: InitializedDevice;
   timedOut: boolean;
   immediateFailure: boolean;
   networkFailure: boolean;
@@ -164,11 +164,12 @@ export async function fetchDeviceInfo(
   const abortFromParent = () => controller.abort();
   options.signal?.addEventListener("abort", abortFromParent, { once: true });
 
-  const requestOptions: RequestInit = {
+  const requestOptions: RequestInit & { targetAddressSpace: "local" } = {
     method: "GET",
     mode: "cors",
     cache: "no-store",
     signal: controller.signal,
+    targetAddressSpace: "local",
   };
 
   try {
@@ -223,8 +224,7 @@ function prioritizedApiBaseUrls(preferredApiBaseUrl?: string | null) {
   return [
     ...(preferred ? [preferred] : []),
     ...remembered,
-    DEVICE_API_BASE_URLS[0],
-    ...DEVICE_API_BASE_URLS.slice(1),
+    ...DEVICE_API_BASE_URLS,
   ].filter((url, index, urls) => urls.indexOf(url) === index);
 }
 
@@ -240,7 +240,15 @@ async function attemptDiscoveryAddress(
     });
     return {
       apiBaseUrl,
-      device: { apiBaseUrl, info, status: "online" },
+      device: {
+        initialization: "initialized",
+        source: "network",
+        deviceId: info.device_id,
+        ipAddress: new URL(apiBaseUrl).hostname,
+        apiBaseUrl,
+        info,
+        status: "online",
+      },
       timedOut: false,
       immediateFailure: false,
       networkFailure: false,
@@ -278,7 +286,7 @@ export async function discoverDevices(
     attempts: DiscoveryAttempt[],
     failureReason?: DiscoveryReport["failureReason"],
   ): DiscoveryReport => {
-    const uniqueDevices = new Map<string, DiscoveredDevice>();
+    const uniqueDevices = new Map<string, InitializedDevice>();
     attempts.forEach(({ device }) => {
       if (device && !uniqueDevices.has(device.info.device_id)) {
         uniqueDevices.set(device.info.device_id, device);

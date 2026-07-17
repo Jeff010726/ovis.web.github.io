@@ -3,6 +3,7 @@ export type DeviceState =
   | "scanning"
   | "results"
   | "connecting"
+  | "initializing"
   | "recovering"
   | "connected"
   | "error";
@@ -34,11 +35,28 @@ export interface OvisDeviceInfo {
   manager_version: string;
 }
 
-export interface DiscoveredDevice {
+export interface InitializedDevice {
+  initialization: "initialized";
+  source: "network";
+  deviceId: string;
+  ipAddress: string;
   apiBaseUrl: string;
   info: OvisDeviceInfo;
   status: "online" | "offline";
 }
+
+export interface UninitializedDevice {
+  initialization: "uninitialized";
+  source: "webusb";
+  deviceId: string;
+  usbSession: import("./webusb.api").OvisUsbDevice;
+  info: import("./webusb.api").OvisUsbDeviceInfo;
+}
+
+export type DiscoveredOvisDevice = InitializedDevice | UninitializedDevice;
+
+// Existing configuration code only accepts initialized network devices.
+export type DiscoveredDevice = InitializedDevice;
 
 export type LocalNetworkPermissionState =
   | "granted"
@@ -47,7 +65,7 @@ export type LocalNetworkPermissionState =
   | "unsupported";
 
 export interface DiscoveryReport {
-  devices: DiscoveredDevice[];
+  devices: DiscoveredOvisDevice[];
   durationMs: number;
   attempted: number;
   timedOut: number;
@@ -58,21 +76,27 @@ export interface DiscoveryReport {
 
 export interface UseDeviceConnection {
   state: DeviceState;
-  devices: DiscoveredDevice[];
-  selectedDevice: DiscoveredDevice | null;
+  devices: DiscoveredOvisDevice[];
+  selectedDevice: DiscoveredOvisDevice | null;
+  initializedDevices: InitializedDevice[];
   device: OvisDeviceInfo | null;
   error: DeviceConnectionErrorCode | null;
   connectedAt: Date | null;
   applicationLocked: boolean;
+  usbAvailable: boolean;
+  usbAuthorizing: boolean;
+  usbError: string | null;
   discoveryReport: DiscoveryReport | null;
   scan(): Promise<void>;
   cancelScan(): void;
+  authorizeUsbDevice(): Promise<void>;
   selectDevice(deviceId: string): void;
   connect(): Promise<void>;
   connectManualAddress(ipAddress: string): Promise<void>;
   disconnect(): void;
   rescan(): Promise<void>;
   retry(): Promise<void>;
+  cancelInitialization(): void;
   setApplicationLocked(locked: boolean): void;
   adoptRecoveredDevice(apiBaseUrl: string, info: OvisDeviceInfo): void;
 }

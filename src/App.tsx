@@ -8,7 +8,9 @@ function App() {
   const { t } = useTranslation();
   const connection = useDeviceConnection();
   const isConfigurationView =
-    connection.state === "connected" || connection.state === "recovering";
+    connection.state === "connected" ||
+    connection.state === "recovering" ||
+    connection.state === "initializing";
 
   return (
     <div
@@ -43,12 +45,17 @@ function App() {
             state={connection.state}
             devices={connection.devices}
             selectedDevice={connection.selectedDevice}
+            initializedDevices={connection.initializedDevices}
             device={connection.device}
             error={connection.error}
             connectedAt={connection.connectedAt}
             applicationLocked={connection.applicationLocked}
+            usbAvailable={connection.usbAvailable}
+            usbAuthorizing={connection.usbAuthorizing}
+            usbError={connection.usbError}
             onScan={() => void connection.scan()}
             onCancelScan={connection.cancelScan}
+            onAuthorizeUsbDevice={() => void connection.authorizeUsbDevice()}
             onSelectDevice={connection.selectDevice}
             onConnect={() => void connection.connect()}
             onManualConnect={(ipAddress) =>
@@ -57,6 +64,7 @@ function App() {
             onDisconnect={connection.disconnect}
             onRescan={() => void connection.rescan()}
             onRetry={() => void connection.retry()}
+            onCancelInitialization={connection.cancelInitialization}
             onApplicationLockChange={connection.setApplicationLocked}
             onDeviceRecovered={connection.adoptRecoveredDevice}
           />

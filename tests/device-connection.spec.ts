@@ -178,6 +178,91 @@ const fulfillJson = (route: Route, body: unknown) =>
     body: JSON.stringify(body),
   });
 
+async function mockAuthorizedWebUsbDevice(
+  page: Page,
+  deviceId: string,
+  initiallyAuthorized = true,
+) {
+  await page.addInitScript(({ authorizedDeviceId, authorizedInitially }) => {
+    let usbInfo = {
+      protocol: 2,
+      device_id: authorizedDeviceId,
+      subnet: -1,
+      pending_subnet: -1,
+      ncm_active: false,
+    };
+    const configuration = {
+      configurationValue: 1,
+      interfaces: [
+        {
+          interfaceNumber: 2,
+          alternates: [
+            {
+              interfaceClass: 0xff,
+              interfaceSubclass: 0x4f,
+              interfaceProtocol: 0x01,
+            },
+          ],
+        },
+      ],
+    };
+    let opened = false;
+    let authorized = authorizedInitially;
+    const usbDevice = {
+      vendorId: 0x3346,
+      productId: 0x100e,
+      serialNumber: authorizedDeviceId,
+      get opened() {
+        return opened;
+      },
+      configuration,
+      configurations: [configuration],
+      open: async () => {
+        opened = true;
+      },
+      close: async () => {
+        opened = false;
+      },
+      selectConfiguration: async () => undefined,
+      claimInterface: async () => undefined,
+      controlTransferIn: async () => {
+        const bytes = new TextEncoder().encode(JSON.stringify(usbInfo));
+        return { data: new DataView(bytes.buffer) };
+      },
+      controlTransferOut: async (
+        setup: { request: number },
+        data: Uint8Array,
+      ) => {
+        if (setup.request === 0x03) {
+          usbInfo = { ...usbInfo, pending_subnet: data[0] };
+        } else if (setup.request === 0x04) {
+          usbInfo = {
+            ...usbInfo,
+            subnet: usbInfo.pending_subnet,
+            pending_subnet: -1,
+          };
+        } else if (setup.request === 0x05) {
+          usbInfo = { ...usbInfo, pending_subnet: -1 };
+        }
+        return { status: "ok" };
+      },
+    };
+    const events = new EventTarget();
+    Object.defineProperty(navigator, "usb", {
+      configurable: true,
+      value: {
+        getDevices: async () => (authorized ? [usbDevice] : []),
+        requestDevice: async () => {
+          authorized = true;
+          return usbDevice;
+        },
+        addEventListener: events.addEventListener.bind(events),
+        removeEventListener: events.removeEventListener.bind(events),
+      },
+    });
+  }, { authorizedDeviceId: deviceId, authorizedInitially: initiallyAuthorized });
+}
+
 async function discoverSingleDevice(
   page: Page,
   deviceInfoHandler?: (route: Route) => Promise<unknown>,
@@ -356,7 +441,7 @@ test("renders and rotates the optimized product model", async ({ page }) => {
   await page.screenshot({ path: "/tmp/ovis-model-desktop.png", fullPage: true });
 });
 
-test("scans with at most four requests and deduplicates device ids", async ({
+test("scans with bounded concurrency and deduplicates device ids", async ({
   page,
 }) => {
   let activeRequests = 0;
@@ -419,10 +504,10 @@ test("scans with at most four requests and deduplicates device ids", async ({
     return visualBounds.bottom - imageBounds.bottom;
   });
   expect(imageBottomGap).toBeGreaterThanOrEqual(14);
-  expect(requestedHosts.size).toBe(16);
-  expect(firstRequestedHost).toBe("192.168.42.1");
+  expect(requestedHosts.size).toBe(256);
+  expect(firstRequestedHost).toBe("192.168.0.1");
   expect(maximumActiveRequests).toBeGreaterThan(1);
-  expect(maximumActiveRequests).toBeLessThanOrEqual(4);
+  expect(maximumActiveRequests).toBeLessThanOrEqual(16);
   const resultsLayout = await page.evaluate(() => {
     const workspace = document.querySelector(".workspace-panel")!;
     return {
@@ -441,6 +526,113 @@ test("scans with at most four requests and deduplicates device ids", async ({
   expect(resultsLayout.documentHeight).toBe(resultsLayout.viewportHeight);
   expect(resultsLayout.resultsOverflowY).toBe("auto");
   await page.screenshot({ path: "/tmp/ovis-results-desktop.png", fullPage: true });
+});
+
+test("merges initialized network and authorized WebUSB devices", async ({ page }) => {
+  const usbDeviceId = "OVIS-1842-USB000000000001";
+  await mockAuthorizedWebUsbDevice(page, usbDeviceId);
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) === "192.168.42.1") {
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByRole("radio")).toHaveCount(2);
+  await expect(
+    page.getByRole("radio", { name: new RegExp(usbDeviceId) }),
+  ).toBeVisible();
+  await expect(page.getByText("需要初始化")).toBeVisible();
+  await page.screenshot({ path: "/tmp/ovis-unified-discovery.png", fullPage: true });
+
+  await page.getByRole("radio", { name: new RegExp(usbDeviceId) }).click();
+  await page.getByRole("button", { name: "初始化设备" }).click();
+  await expect(
+    page.getByRole("heading", { name: "初始化 OVIS 设备" }),
+  ).toBeVisible();
+  await expect(page.getByText(usbDeviceId)).toBeVisible();
+  await expect(page.getByText("设备配置")).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/ovis-device-initialization.png", fullPage: true });
+  await page.getByLabel("NCM 网段").fill("42");
+  await page.getByRole("button", { name: "初始化设备" }).click();
+  await expect(
+    page.getByText("192.168.42.1 已被另一台经过验证的 OVIS 设备占用。"),
+  ).toBeVisible();
+});
+
+test("prefers a verified network result over WebUSB for the same device id", async ({
+  page,
+}) => {
+  await mockAuthorizedWebUsbDevice(page, deviceInfo.device_id);
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) === "192.168.42.1") {
+      return fulfillJson(route, deviceInfo);
+    }
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(page.getByRole("radio")).toHaveCount(1);
+  await expect(page.getByText("在线")).toBeVisible();
+  await expect(page.getByText("需要初始化")).toHaveCount(0);
+});
+
+test("adds a newly authorized uninitialized USB device to results", async ({ page }) => {
+  const usbDeviceId = "OVIS-1842-USB000000000002";
+  await mockAuthorizedWebUsbDevice(page, usbDeviceId, false);
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "授权 USB 设备" }).click();
+
+  await expect(
+    page.getByRole("radio", { name: new RegExp(usbDeviceId) }),
+  ).toBeVisible();
+  await expect(page.getByText("需要初始化")).toBeVisible();
+});
+
+test("initializes an authorized USB device and reconnects only its identity", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const usbDeviceId = "OVIS-1842-USB000000000003";
+  const initializedUsbInfo = {
+    ...deviceInfo,
+    device_id: usbDeviceId,
+    serial: usbDeviceId,
+  };
+  let targetRequests = 0;
+  await mockAuthorizedWebUsbDevice(page, usbDeviceId, false);
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) !== "192.168.61.1") {
+      return route.abort("connectionrefused");
+    }
+    targetRequests += 1;
+    return targetRequests === 1
+      ? route.abort("connectionrefused")
+      : fulfillJson(route, initializedUsbInfo);
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "授权 USB 设备" }).click();
+  await page.getByRole("button", { name: "初始化设备" }).click();
+  await page.getByLabel("NCM 网段").fill("61");
+  await page.getByRole("button", { name: "初始化设备" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "设备配置", level: 3 }),
+  ).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByText("192.168.61.1:8080/api/v1")).toBeVisible();
+  expect(targetRequests).toBeGreaterThanOrEqual(2);
+  const rememberedSubnets = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("ovis-ncm-subnets") ?? "{}"),
+  );
+  expect(rememberedSubnets[usbDeviceId]).toBe(61);
 });
 
 test("stops after the permission probe when local network access is denied", async ({

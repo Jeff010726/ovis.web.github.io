@@ -11,11 +11,19 @@ import {
   fetchDeviceInfo,
   isSupportedBrowser,
 } from "./device.api";
+import {
+  closeOvisUsbDevice,
+  getAuthorizedOvisUsbDevices,
+  isWebUsbAvailable,
+  onWebUsbDeviceChange,
+  requestOvisUsbDevice,
+} from "./webusb.api";
 import type {
   DeviceConnectionErrorCode,
   DiscoveryReport,
   DeviceState,
-  DiscoveredDevice,
+  DiscoveredOvisDevice,
+  InitializedDevice,
   OvisDeviceInfo,
   UseDeviceConnection,
 } from "./device.types";
@@ -60,13 +68,33 @@ const reportErrorCode = (
   return report.devices.length === 0 ? "NO_DEVICE_FOUND" : null;
 };
 
+const toUninitializedDevice = (
+  usbSession: Awaited<ReturnType<typeof getAuthorizedOvisUsbDevices>>[number],
+): DiscoveredOvisDevice => ({
+  initialization: "uninitialized",
+  source: "webusb",
+  deviceId: usbSession.info.device_id,
+  usbSession,
+  info: usbSession.info,
+});
+
+function mergeDiscoveredDevices(
+  initialized: InitializedDevice[],
+  uninitialized: DiscoveredOvisDevice[],
+): DiscoveredOvisDevice[] {
+  const devicesById = new Map<string, DiscoveredOvisDevice>();
+  uninitialized.forEach((entry) => devicesById.set(entry.deviceId, entry));
+  initialized.forEach((entry) => devicesById.set(entry.deviceId, entry));
+  return [...devicesById.values()];
+}
+
 export function useDeviceConnection(): UseDeviceConnection {
   const browserSupported = isSupportedBrowser();
   const startupPending = useMemo(() => readPendingConfigApplication(), []);
   const [state, setState] = useState<DeviceState>(
     startupPending ? "recovering" : browserSupported ? "idle" : "error",
   );
-  const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
+  const [devices, setDevices] = useState<DiscoveredOvisDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [device, setDevice] = useState<OvisDeviceInfo | null>(null);
   const [error, setError] = useState<DeviceConnectionErrorCode | null>(
@@ -76,18 +104,20 @@ export function useDeviceConnection(): UseDeviceConnection {
   const [applicationLocked, setApplicationLockedState] = useState(
     startupPending !== null,
   );
+  const [usbAuthorizing, setUsbAuthorizing] = useState(false);
+  const [usbError, setUsbError] = useState<string | null>(null);
   const [discoveryReport, setDiscoveryReport] =
     useState<DiscoveryReport | null>(null);
   const applicationLockedRef = useRef(startupPending !== null);
   const operationGeneration = useRef(0);
   const scanController = useRef<AbortController | null>(null);
-  const devicesRef = useRef<DiscoveredDevice[]>([]);
+  const devicesRef = useRef<DiscoveredOvisDevice[]>([]);
   const connectedTarget = useRef<ConnectedTarget | null>(null);
   const lastSuccessfulAddress = useRef<string | null>(
     readLastSuccessfulAddress(),
   );
 
-  const updateDevices = useCallback((nextDevices: DiscoveredDevice[]) => {
+  const updateDevices = useCallback((nextDevices: DiscoveredOvisDevice[]) => {
     devicesRef.current = nextDevices;
     setDevices(nextDevices);
   }, []);
@@ -99,13 +129,17 @@ export function useDeviceConnection(): UseDeviceConnection {
 
   const adoptRecoveredDevice = useCallback(
     (apiBaseUrl: string, info: OvisDeviceInfo) => {
-      const recoveredDevice: DiscoveredDevice = {
+      const recoveredDevice: InitializedDevice = {
+        initialization: "initialized",
+        source: "network",
+        deviceId: info.device_id,
+        ipAddress: new URL(apiBaseUrl).hostname,
         apiBaseUrl,
         info,
         status: "online",
       };
       const withoutRecovered = devicesRef.current.filter(
-        (entry) => entry.info.device_id !== info.device_id,
+        (entry) => entry.deviceId !== info.device_id,
       );
       updateDevices([recoveredDevice, ...withoutRecovered]);
       setSelectedDeviceId(info.device_id);
@@ -122,8 +156,17 @@ export function useDeviceConnection(): UseDeviceConnection {
 
   const selectedDevice = useMemo(
     () =>
-      devices.find((entry) => entry.info.device_id === selectedDeviceId) ?? null,
+      devices.find((entry) => entry.deviceId === selectedDeviceId) ?? null,
     [devices, selectedDeviceId],
+  );
+
+  const initializedDevices = useMemo(
+    () =>
+      devices.filter(
+        (entry): entry is InitializedDevice =>
+          entry.initialization === "initialized",
+      ),
+    [devices],
   );
 
   useEffect(() => {
@@ -171,19 +214,45 @@ export function useDeviceConnection(): UseDeviceConnection {
     setDevice(null);
     setConnectedAt(null);
     setError(null);
+    setUsbError(null);
     setDiscoveryReport(null);
+    let usbDiscovery: ReturnType<typeof getAuthorizedOvisUsbDevices> | null = null;
 
     try {
-      const report = await discoverDevices(
+      const networkDiscovery = discoverDevices(
         controller.signal,
         lastSuccessfulAddress.current,
       );
+      usbDiscovery = getAuthorizedOvisUsbDevices().catch(() => []);
+      const [networkReport, usbSessions] = await Promise.all([
+        networkDiscovery,
+        usbDiscovery,
+      ]);
       if (operationGeneration.current !== generation) return;
 
       scanController.current = null;
+      const initialized = networkReport.devices.filter(
+        (entry): entry is InitializedDevice =>
+          entry.initialization === "initialized",
+      );
+      const initializedIds = new Set(initialized.map((entry) => entry.deviceId));
+      usbSessions.forEach((session) => {
+        if (initializedIds.has(session.info.device_id)) {
+          void closeOvisUsbDevice(session).catch(() => undefined);
+        }
+      });
+      const combinedDevices = mergeDiscoveredDevices(
+        initialized,
+        usbSessions.map(toUninitializedDevice),
+      );
+      const report: DiscoveryReport = {
+        ...networkReport,
+        devices: combinedDevices,
+      };
       setDiscoveryReport(report);
-      updateDevices(report.devices);
-      const reportError = reportErrorCode(report);
+      updateDevices(combinedDevices);
+      const reportError =
+        combinedDevices.length > 0 ? null : reportErrorCode(report);
       if (reportError) {
         setError(reportError);
         setState("error");
@@ -191,6 +260,11 @@ export function useDeviceConnection(): UseDeviceConnection {
         setState("results");
       }
     } catch {
+      if (usbDiscovery) {
+        void usbDiscovery.then((sessions) =>
+          Promise.allSettled(sessions.map(closeOvisUsbDevice)),
+        );
+      }
       if (
         operationGeneration.current !== generation ||
         controller.signal.aborted
@@ -202,6 +276,42 @@ export function useDeviceConnection(): UseDeviceConnection {
       setState("error");
     }
   }, [updateDevices]);
+
+  const authorizeUsbDevice = useCallback(async () => {
+    if (applicationLockedRef.current || usbAuthorizing) return;
+    setUsbAuthorizing(true);
+    setUsbError(null);
+    try {
+      const session = await requestOvisUsbDevice();
+      const usbDevice = toUninitializedDevice(session);
+      const initialized = devicesRef.current.filter(
+        (entry): entry is InitializedDevice =>
+          entry.initialization === "initialized",
+      );
+      if (initialized.some((entry) => entry.deviceId === usbDevice.deviceId)) {
+        await closeOvisUsbDevice(session).catch(() => undefined);
+      }
+      const uninitialized = [
+        usbDevice,
+        ...devicesRef.current.filter(
+          (entry) =>
+            entry.initialization === "uninitialized" &&
+            entry.deviceId !== usbDevice.deviceId,
+        ),
+      ];
+      const combined = mergeDiscoveredDevices(initialized, uninitialized);
+      updateDevices(combined);
+      setSelectedDeviceId(usbDevice.deviceId);
+      setError(null);
+      setState("results");
+    } catch (nextError) {
+      if (!(nextError instanceof DOMException && nextError.name === "NotFoundError")) {
+        setUsbError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      setUsbAuthorizing(false);
+    }
+  }, [updateDevices, usbAuthorizing]);
 
   const cancelScan = useCallback(() => {
     if (applicationLockedRef.current) return;
@@ -221,9 +331,19 @@ export function useDeviceConnection(): UseDeviceConnection {
   const connect = useCallback(async () => {
     if (applicationLockedRef.current) return;
     const target = devicesRef.current.find(
-      (entry) => entry.info.device_id === selectedDeviceId,
+      (entry) => entry.deviceId === selectedDeviceId,
     );
     if (!target) return;
+
+    if (target.initialization === "uninitialized") {
+      scanController.current?.abort();
+      operationGeneration.current += 1;
+      setDevice(null);
+      setConnectedAt(null);
+      setError(null);
+      setState("initializing");
+      return;
+    }
 
     scanController.current?.abort();
     const generation = operationGeneration.current + 1;
@@ -241,14 +361,15 @@ export function useDeviceConnection(): UseDeviceConnection {
       }
 
       const updatedDevices = devicesRef.current.map((entry) =>
-        entry.info.device_id === target.info.device_id
+        entry.initialization === "initialized" &&
+        entry.deviceId === target.deviceId
           ? { ...entry, info, status: "online" as const }
           : entry,
       );
       updateDevices(updatedDevices);
       connectedTarget.current = {
         apiBaseUrl: target.apiBaseUrl,
-        deviceId: target.info.device_id,
+        deviceId: target.deviceId,
       };
       lastSuccessfulAddress.current = target.apiBaseUrl;
       writeLastSuccessfulAddress(target.apiBaseUrl);
@@ -292,7 +413,11 @@ export function useDeviceConnection(): UseDeviceConnection {
       try {
         const info = await fetchDeviceInfo(apiBaseUrl);
         if (operationGeneration.current !== generation) return;
-        const manualDevice: DiscoveredDevice = {
+        const manualDevice: InitializedDevice = {
+          initialization: "initialized",
+          source: "network",
+          deviceId: info.device_id,
+          ipAddress: new URL(apiBaseUrl).hostname,
           apiBaseUrl,
           info,
           status: "online",
@@ -300,7 +425,7 @@ export function useDeviceConnection(): UseDeviceConnection {
         updateDevices([
           manualDevice,
           ...devicesRef.current.filter(
-            (entry) => entry.info.device_id !== info.device_id,
+            (entry) => entry.deviceId !== info.device_id,
           ),
         ]);
         setSelectedDeviceId(info.device_id);
@@ -335,6 +460,12 @@ export function useDeviceConnection(): UseDeviceConnection {
     setDevice(null);
     setError(null);
     setConnectedAt(null);
+  }, []);
+
+  const cancelInitialization = useCallback(() => {
+    operationGeneration.current += 1;
+    setState(devicesRef.current.length > 0 ? "results" : "idle");
+    setError(null);
   }, []);
 
   const rescan = useCallback(async () => {
@@ -385,7 +516,8 @@ export function useDeviceConnection(): UseDeviceConnection {
           connectedTarget.current = null;
           updateDevices(
             devicesRef.current.map((entry) =>
-              entry.info.device_id === target.deviceId
+              entry.initialization === "initialized" &&
+              entry.deviceId === target.deviceId
                 ? { ...entry, status: "offline" as const }
                 : entry,
             ),
@@ -403,6 +535,32 @@ export function useDeviceConnection(): UseDeviceConnection {
     return () => window.clearInterval(heartbeat);
   }, [applicationLocked, state, updateDevices]);
 
+  useEffect(() => {
+    if (!isWebUsbAvailable()) return;
+    return onWebUsbDeviceChange(() => {
+      void getAuthorizedOvisUsbDevices()
+        .then((sessions) => {
+          const initialized = devicesRef.current.filter(
+            (entry): entry is InitializedDevice =>
+              entry.initialization === "initialized",
+          );
+          const combined = mergeDiscoveredDevices(
+            initialized,
+            sessions.map(toUninitializedDevice),
+          );
+          updateDevices(combined);
+          if (
+            selectedDeviceId &&
+            !combined.some((entry) => entry.deviceId === selectedDeviceId)
+          ) {
+            setSelectedDeviceId(null);
+            if (state === "initializing") setState("results");
+          }
+        })
+        .catch(() => undefined);
+    });
+  }, [selectedDeviceId, state, updateDevices]);
+
   useEffect(
     () => () => {
       scanController.current?.abort();
@@ -415,19 +573,25 @@ export function useDeviceConnection(): UseDeviceConnection {
     state,
     devices,
     selectedDevice,
+    initializedDevices,
     device,
     error,
     connectedAt,
     applicationLocked,
+    usbAvailable: isWebUsbAvailable(),
+    usbAuthorizing,
+    usbError,
     discoveryReport,
     scan,
     cancelScan,
+    authorizeUsbDevice,
     selectDevice,
     connect,
     connectManualAddress,
     disconnect,
     rescan,
     retry,
+    cancelInitialization,
     setApplicationLocked,
     adoptRecoveredDevice,
   };

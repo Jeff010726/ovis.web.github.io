@@ -1,4 +1,5 @@
 import i18n from "../../i18n";
+import type { OvisDeviceInfo } from "./device.types";
 
 const OVIS_VENDOR_ID = 0x3346;
 const OVIS_PRODUCT_ID = 0x100e;
@@ -79,6 +80,10 @@ interface WebUsbManager {
   removeEventListener(type: "connect" | "disconnect", listener: EventListener): void;
 }
 
+interface WebUsbConnectionEvent extends Event {
+  device?: WebUsbDevice;
+}
+
 interface WebLockManager {
   request<T>(
     name: string,
@@ -113,7 +118,7 @@ export interface OvisUsbSubnetAssignment {
 
 const usbManager = () => (navigator as NavigatorWithUsb).usb;
 
-function rememberSubnet(deviceId: string, subnet: number) {
+export function rememberOvisSubnet(deviceId: string, subnet: number) {
   if (!Number.isInteger(subnet) || subnet < 0 || subnet > 255) return;
   try {
     const stored = JSON.parse(
@@ -202,7 +207,7 @@ async function readInfo(session: OvisUsbDevice): Promise<OvisUsbDeviceInfo> {
     throw new Error(i18n.t("usb.invalidResponse"));
   }
   const deviceInfo = info as unknown as OvisUsbDeviceInfo;
-  rememberSubnet(deviceInfo.device_id, deviceInfo.subnet);
+  rememberOvisSubnet(deviceInfo.device_id, deviceInfo.subnet);
   return deviceInfo;
 }
 
@@ -239,7 +244,22 @@ export async function getAuthorizedOvisUsbDevices(): Promise<OvisUsbDevice[]> {
     (device) =>
       device.vendorId === OVIS_VENDOR_ID && device.productId === OVIS_PRODUCT_ID,
   );
-  return Promise.all(devices.map(openOvisDevice));
+  const results = await Promise.allSettled(devices.map(openOvisDevice));
+  const sessions: OvisUsbDevice[] = [];
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    const session = result.value;
+    if (
+      session.info.subnet === -1 &&
+      session.info.pending_subnet === -1 &&
+      session.info.ncm_active === false
+    ) {
+      sessions.push(session);
+    } else {
+      await session.device.close().catch(() => undefined);
+    }
+  }
+  return sessions;
 }
 
 export async function requestOvisUsbDevice(): Promise<OvisUsbDevice> {
@@ -248,7 +268,41 @@ export async function requestOvisUsbDevice(): Promise<OvisUsbDevice> {
   const device = await usb.requestDevice({
     filters: [{ vendorId: OVIS_VENDOR_ID, productId: OVIS_PRODUCT_ID }],
   });
-  return openOvisDevice(device);
+  const session = await openOvisDevice(device);
+  if (
+    session.info.subnet !== -1 ||
+    session.info.pending_subnet !== -1 ||
+    session.info.ncm_active
+  ) {
+    await session.device.close().catch(() => undefined);
+    throw new Error(i18n.t("usb.alreadyInitialized"));
+  }
+  return session;
+}
+
+export async function refreshOvisUsbDeviceInfo(
+  session: OvisUsbDevice,
+): Promise<OvisUsbDeviceInfo> {
+  session.info = await readInfo(session);
+  return session.info;
+}
+
+export async function closeOvisUsbDevice(session: OvisUsbDevice) {
+  if (session.device.opened) await session.device.close();
+}
+
+export function onOvisUsbDeviceDisconnected(
+  session: OvisUsbDevice,
+  listener: () => void,
+) {
+  const usb = usbManager();
+  if (!usb) return () => undefined;
+  const handler: EventListener = (event) => {
+    const disconnected = (event as WebUsbConnectionEvent).device;
+    if (!disconnected || disconnected === session.device) listener();
+  };
+  usb.addEventListener("disconnect", handler);
+  return () => usb.removeEventListener("disconnect", handler);
 }
 
 function validateAssignments(
@@ -333,7 +387,7 @@ async function configureOvisUsbSubnetsUnlocked(
     if (!info || info.subnet !== subnet || info.pending_subnet !== -1) {
       throw new Error(i18n.t("usb.verificationFailed"));
     }
-    rememberSubnet(deviceId, subnet);
+    rememberOvisSubnet(deviceId, subnet);
   });
   return assignments;
 }
@@ -348,5 +402,181 @@ export async function configureOvisUsbSubnets(
     "ovis-ncm-subnet-configuration",
     { mode: "exclusive" },
     () => configureOvisUsbSubnetsUnlocked(devices, assignments),
+  );
+}
+
+export type OvisUsbInitializationPhase =
+  | "checking-address"
+  | "reading-device"
+  | "writing-subnet"
+  | "committing"
+  | "restarting"
+  | "waiting"
+  | "complete";
+
+export class OvisUsbInitializationError extends Error {
+  constructor(
+    public readonly code:
+      | "SUBNET_OCCUPIED"
+      | "DEVICE_DISCONNECTED"
+      | "RESTART_TIMEOUT"
+      | "VERIFICATION_FAILED",
+    public readonly ipAddress?: string,
+  ) {
+    const message = (() => {
+      if (code === "SUBNET_OCCUPIED" && ipAddress) {
+        return i18n.t("usb.subnetOccupied", { ipAddress });
+      }
+      if (code === "DEVICE_DISCONNECTED") {
+        return i18n.t("usb.errors.DEVICE_DISCONNECTED");
+      }
+      if (code === "RESTART_TIMEOUT") {
+        return i18n.t("usb.errors.RESTART_TIMEOUT");
+      }
+      if (code === "VERIFICATION_FAILED") {
+        return i18n.t("usb.errors.VERIFICATION_FAILED");
+      }
+      return i18n.t("usb.errors.SUBNET_OCCUPIED");
+    })();
+    super(
+      message,
+    );
+    this.name = "OvisUsbInitializationError";
+  }
+}
+
+interface InitializeOvisUsbDeviceOptions {
+  occupiedSubnets: ReadonlySet<number>;
+  signal: AbortSignal;
+  onPhase?: (phase: OvisUsbInitializationPhase) => void;
+  probeNetworkDevice: (
+    apiBaseUrl: string,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ) => Promise<OvisDeviceInfo | null>;
+}
+
+export interface InitializedOvisUsbDevice {
+  apiBaseUrl: string;
+  ipAddress: string;
+  info: OvisDeviceInfo;
+}
+
+const abortableDelay = (delayMs: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timeout = window.setTimeout(resolve, delayMs);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timeout);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+
+async function initializeOvisUsbDeviceUnlocked(
+  session: OvisUsbDevice,
+  subnet: number,
+  options: InitializeOvisUsbDeviceOptions,
+): Promise<InitializedOvisUsbDevice> {
+  const { signal, onPhase, probeNetworkDevice } = options;
+  const ipAddress = `192.168.${subnet}.1`;
+  const apiBaseUrl = `http://${ipAddress}:8080/api/v1`;
+  const expectedDeviceId = session.info.device_id;
+  signal.throwIfAborted();
+
+  onPhase?.("checking-address");
+  if (options.occupiedSubnets.has(subnet)) {
+    await sendCommand(session, REQUEST_ABORT).catch(() => undefined);
+    throw new OvisUsbInitializationError("SUBNET_OCCUPIED", ipAddress);
+  }
+  const existingDevice = await probeNetworkDevice(apiBaseUrl, 1_500, signal);
+  if (existingDevice) {
+    await sendCommand(session, REQUEST_ABORT).catch(() => undefined);
+    throw new OvisUsbInitializationError("SUBNET_OCCUPIED", ipAddress);
+  }
+
+  let committed = false;
+  try {
+    onPhase?.("reading-device");
+    const initialInfo = await refreshOvisUsbDeviceInfo(session);
+    if (
+      initialInfo.device_id !== expectedDeviceId ||
+      initialInfo.subnet !== -1 ||
+      initialInfo.pending_subnet !== -1 ||
+      initialInfo.ncm_active
+    ) {
+      throw new OvisUsbInitializationError("VERIFICATION_FAILED");
+    }
+
+    onPhase?.("writing-subnet");
+    await sendCommand(session, REQUEST_SET_SUBNET, subnet);
+    const pendingInfo = await refreshOvisUsbDeviceInfo(session);
+    if (
+      pendingInfo.device_id !== initialInfo.device_id ||
+      pendingInfo.pending_subnet !== subnet
+    ) {
+      throw new OvisUsbInitializationError("VERIFICATION_FAILED");
+    }
+
+    onPhase?.("committing");
+    await sendCommand(session, REQUEST_COMMIT);
+    committed = true;
+    rememberOvisSubnet(initialInfo.device_id, subnet);
+    const committedInfo = await refreshOvisUsbDeviceInfo(session);
+    if (
+      committedInfo.device_id !== initialInfo.device_id ||
+      committedInfo.subnet !== subnet ||
+      committedInfo.pending_subnet !== -1
+    ) {
+      throw new OvisUsbInitializationError("VERIFICATION_FAILED");
+    }
+  } catch (error) {
+    if (!committed) {
+      await sendCommand(session, REQUEST_ABORT).catch(() => undefined);
+    }
+    if (signal.aborted) {
+      throw new OvisUsbInitializationError("DEVICE_DISCONNECTED");
+    }
+    throw error;
+  }
+
+  await closeOvisUsbDevice(session).catch(() => undefined);
+  onPhase?.("restarting");
+  await abortableDelay(2_000, signal);
+  onPhase?.("waiting");
+
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    signal.throwIfAborted();
+    const info = await probeNetworkDevice(apiBaseUrl, 1_500, signal);
+    if (info?.device_id === expectedDeviceId) {
+      onPhase?.("complete");
+      return { apiBaseUrl, ipAddress, info };
+    }
+    await abortableDelay(2_000, signal);
+  }
+  throw new OvisUsbInitializationError("RESTART_TIMEOUT");
+}
+
+export async function initializeOvisUsbDevice(
+  session: OvisUsbDevice,
+  subnet: number,
+  options: InitializeOvisUsbDeviceOptions,
+): Promise<InitializedOvisUsbDevice> {
+  if (!Number.isInteger(subnet) || subnet < 0 || subnet > 255) {
+    throw new Error(i18n.t("usb.invalidSubnet"));
+  }
+  const locks = (navigator as NavigatorWithUsb).locks;
+  if (!locks) return initializeOvisUsbDeviceUnlocked(session, subnet, options);
+  return locks.request(
+    `ovis-ncm-subnet-${subnet}`,
+    { mode: "exclusive" },
+    () => initializeOvisUsbDeviceUnlocked(session, subnet, options),
   );
 }

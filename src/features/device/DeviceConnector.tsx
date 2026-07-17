@@ -9,16 +9,18 @@ import {
   RefreshCw,
   Search,
   Square,
+  Usb,
 } from "lucide-react";
 import { ErrorMessage } from "../../components/ErrorMessage";
 import { DeviceConfiguration } from "../config/DeviceConfiguration";
 import { buildDeviceApiBaseUrl, DEVICE_HOSTS } from "./device.api";
 import { getDeviceImage } from "./device.assets";
-import { UsbProvisioning } from "./UsbProvisioning";
+import { DeviceInitialization } from "./DeviceInitialization";
 import type {
   DeviceConnectionErrorCode,
   DeviceState,
-  DiscoveredDevice,
+  DiscoveredOvisDevice,
+  InitializedDevice,
   OvisDeviceInfo,
 } from "./device.types";
 
@@ -26,20 +28,26 @@ const OvisModelViewer = lazy(() => import("./OvisModelViewer"));
 
 interface DeviceConnectorProps {
   state: DeviceState;
-  devices: DiscoveredDevice[];
-  selectedDevice: DiscoveredDevice | null;
+  devices: DiscoveredOvisDevice[];
+  selectedDevice: DiscoveredOvisDevice | null;
+  initializedDevices: InitializedDevice[];
   device: OvisDeviceInfo | null;
   error: DeviceConnectionErrorCode | null;
   connectedAt: Date | null;
   applicationLocked: boolean;
+  usbAvailable: boolean;
+  usbAuthorizing: boolean;
+  usbError: string | null;
   onScan: () => void;
   onCancelScan: () => void;
+  onAuthorizeUsbDevice: () => void;
   onSelectDevice: (deviceId: string) => void;
   onConnect: () => void;
   onManualConnect: (ipAddress: string) => void;
   onDisconnect: () => void;
   onRescan: () => void;
   onRetry: () => void;
+  onCancelInitialization: () => void;
   onApplicationLockChange: (locked: boolean) => void;
   onDeviceRecovered: (apiBaseUrl: string, info: OvisDeviceInfo) => void;
 }
@@ -108,23 +116,33 @@ export function DeviceConnector({
   state,
   devices,
   selectedDevice,
+  initializedDevices,
   device,
   error,
   connectedAt,
   applicationLocked,
+  usbAvailable,
+  usbAuthorizing,
+  usbError,
   onScan,
   onCancelScan,
+  onAuthorizeUsbDevice,
   onSelectDevice,
   onConnect,
   onManualConnect,
   onDisconnect,
   onRescan,
   onRetry,
+  onCancelInitialization,
   onApplicationLockChange,
   onDeviceRecovered,
 }: DeviceConnectorProps) {
   const { t } = useTranslation();
-  if (state === "connected" && device && selectedDevice) {
+  if (
+    state === "connected" &&
+    device &&
+    selectedDevice?.initialization === "initialized"
+  ) {
     return (
       <DeviceConfiguration
         device={device}
@@ -135,6 +153,20 @@ export function DeviceConnector({
         onRescan={onRescan}
         onApplicationLockChange={onApplicationLockChange}
         onDeviceRecovered={onDeviceRecovered}
+      />
+    );
+  }
+
+  if (
+    state === "initializing" &&
+    selectedDevice?.initialization === "uninitialized"
+  ) {
+    return (
+      <DeviceInitialization
+        device={selectedDevice}
+        initializedDevices={initializedDevices}
+        onCancel={onCancelInitialization}
+        onInitialized={onDeviceRecovered}
       />
     );
   }
@@ -150,6 +182,18 @@ export function DeviceConnector({
             onRescan={selectedDevice ? onRescan : undefined}
           />
           <ManualAddressForm onConnect={onManualConnect} />
+          {usbAvailable && (
+            <button
+              className="button button--secondary usb-authorize-button"
+              type="button"
+              disabled={usbAuthorizing}
+              onClick={onAuthorizeUsbDevice}
+            >
+              {usbAuthorizing ? <LoaderCircle className="button-spinner" size={15} /> : <Usb size={15} />}
+              {usbAuthorizing ? t("usb.authorizing") : t("usb.authorize")}
+            </button>
+          )}
+          {usbError && <small className="usb-authorization-error" role="alert">{usbError}</small>}
         </div>
       </div>
     );
@@ -197,7 +241,12 @@ export function DeviceConnector({
         </div>
         <h2>
           {selectedDevice
-            ? t("discovery.connectingTitle", { name: selectedDevice.info.name })
+            ? t("discovery.connectingTitle", {
+                name:
+                  selectedDevice.initialization === "initialized"
+                    ? selectedDevice.info.name
+                    : t("usb.deviceName"),
+              })
             : t("discovery.manualConnectingTitle")}
         </h2>
         <p>
@@ -205,7 +254,7 @@ export function DeviceConnector({
             ? t("discovery.connectingDescription")
             : t("discovery.manualConnectingDescription")}
         </p>
-        {selectedDevice && (
+        {selectedDevice?.initialization === "initialized" && (
           <small>
             {t("discovery.connectingTimeout", {
               endpoint: endpointLabel(selectedDevice.apiBaseUrl),
@@ -243,47 +292,56 @@ export function DeviceConnector({
           >
             {devices.map((entry) => {
               const selected =
-                selectedDevice?.info.device_id === entry.info.device_id;
-              const deviceImage = getDeviceImage(entry.info.model);
+                selectedDevice?.deviceId === entry.deviceId;
+              const initialized = entry.initialization === "initialized";
+              const name = initialized ? entry.info.name : t("usb.deviceName");
+              const model = initialized ? entry.info.model : t("usb.uninitializedModel");
+              const serial = initialized ? entry.info.serial : entry.deviceId;
+              const deviceImage = getDeviceImage(initialized ? entry.info.model : "OVIS");
               return (
                 <button
                   className="device-result"
-                  data-status={entry.status}
+                  data-status={initialized ? entry.status : "setup"}
+                  data-initialization={entry.initialization}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  aria-label={`${entry.info.name} ${entry.info.serial}`}
-                  key={entry.info.device_id}
-                  onClick={() => onSelectDevice(entry.info.device_id)}
+                  aria-label={`${name} ${serial}`}
+                  key={entry.deviceId}
+                  onClick={() => onSelectDevice(entry.deviceId)}
                 >
                   <span className="device-result__visual">
                     {deviceImage ? (
                       <img
                         src={deviceImage}
-                        alt={t("discovery.productImage", { name: entry.info.name })}
+                        alt={t("discovery.productImage", { name })}
                         loading="lazy"
                       />
                     ) : (
                       <span className="device-result__placeholder" aria-hidden="true">
                         <ImageOff size={24} strokeWidth={1.3} />
-                        {entry.info.model}
+                        {model}
                       </span>
                     )}
                     <span className="device-result__selector" aria-hidden="true">
                       {selected && <Check size={13} strokeWidth={2.4} />}
                     </span>
                     <span className="device-result__status">
-                      {entry.status === "online" ? t("discovery.online") : t("discovery.offline")}
+                      {initialized
+                        ? entry.status === "online"
+                          ? t("discovery.online")
+                          : t("discovery.offline")
+                        : t("usb.needsSetup")}
                     </span>
                   </span>
                   <span className="device-result__details">
                     <span className="device-result__identity">
-                      <strong>{entry.info.name}</strong>
-                      <small>{entry.info.model}</small>
+                      <strong>{name}</strong>
+                      <small>{model}</small>
                     </span>
-                    <span className="device-result__serial">{entry.info.serial}</span>
+                    <span className="device-result__serial">{serial}</span>
                     <span className="device-result__endpoint">
-                      {endpointLabel(entry.apiBaseUrl)}
+                      {initialized ? endpointLabel(entry.apiBaseUrl) : t("usb.transport")}
                     </span>
                   </span>
                 </button>
@@ -298,14 +356,18 @@ export function DeviceConnector({
         )}
 
         <footer className="discovery-actions">
-          <button
-            className="button button--ghost"
-            type="button"
-            onClick={onRescan}
-          >
-            <RefreshCw size={15} />
-            {t("common.rescan")}
-          </button>
+          <div className="discovery-actions__secondary">
+            <button className="button button--ghost" type="button" onClick={onRescan}>
+              <RefreshCw size={15} />
+              {t("common.rescan")}
+            </button>
+            {usbAvailable && (
+              <button className="button button--secondary" type="button" disabled={usbAuthorizing} onClick={onAuthorizeUsbDevice}>
+                {usbAuthorizing ? <LoaderCircle className="button-spinner" size={15} /> : <Usb size={15} />}
+                {usbAuthorizing ? t("usb.authorizing") : t("usb.authorize")}
+              </button>
+            )}
+          </div>
           {devices.length > 0 && (
             <button
               className="button button--primary discovery-connect"
@@ -314,7 +376,9 @@ export function DeviceConnector({
               onClick={onConnect}
             >
               <Cable size={17} />
-              {t("discovery.connect")}
+              {selectedDevice?.initialization === "uninitialized"
+                ? t("usb.initialize")
+                : t("discovery.connect")}
               <ArrowRight className="button__arrow" size={16} />
             </button>
           )}
@@ -329,12 +393,18 @@ export function DeviceConnector({
         <div className="idle-copy">
           <h2>{t("discovery.idleTitle")}</h2>
           <p>{t("discovery.idleDescription")}</p>
-          <UsbProvisioning onProvisioned={onScan} />
           <button className="button button--primary" type="button" onClick={onScan}>
             <Search size={18} />
             {t("discovery.scan")}
             <ArrowRight className="button__arrow" size={17} />
           </button>
+          {usbAvailable && (
+            <button className="button button--secondary usb-authorize-button" type="button" disabled={usbAuthorizing} onClick={onAuthorizeUsbDevice}>
+              {usbAuthorizing ? <LoaderCircle className="button-spinner" size={15} /> : <Usb size={15} />}
+              {usbAuthorizing ? t("usb.authorizing") : t("usb.authorize")}
+            </button>
+          )}
+          {usbError && <small className="usb-authorization-error" role="alert">{usbError}</small>}
           <ManualAddressForm onConnect={onManualConnect} />
         </div>
         <Suspense

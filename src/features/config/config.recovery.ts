@@ -60,9 +60,11 @@ export async function reconnectConfigDevice(
     if (originalFailures >= ORIGINAL_FAILURES_BEFORE_SCAN) {
       const report = await discoverDevices(signal, pending.api_base_url);
       const matchingDevice = report.devices.find(
-        (device) => device.info.device_id === pending.device_id,
+        (device) =>
+          device.initialization === "initialized" &&
+          device.deviceId === pending.device_id,
       );
-      if (matchingDevice) {
+      if (matchingDevice?.initialization === "initialized") {
         return {
           apiBaseUrl: matchingDevice.apiBaseUrl,
           info: matchingDevice.info,
