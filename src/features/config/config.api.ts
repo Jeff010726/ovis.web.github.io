@@ -11,10 +11,6 @@ import i18n from "../../i18n";
 
 const REQUEST_TIMEOUT_MS = 5_000;
 
-type LocalRequestInit = RequestInit & {
-  targetAddressSpace: "local";
-};
-
 interface ConfigRequestOptions {
   method?: "GET" | "POST" | "PUT";
   body?: unknown;
@@ -41,11 +37,10 @@ async function requestConfigApi<T>(
   const abortFromParent = () => controller.abort();
   options.signal?.addEventListener("abort", abortFromParent, { once: true });
 
-  const requestOptions: LocalRequestInit = {
+  const requestOptions: RequestInit = {
     method: options.method ?? "GET",
     mode: "cors",
     cache: "no-store",
-    targetAddressSpace: "local",
     signal: controller.signal,
     headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
