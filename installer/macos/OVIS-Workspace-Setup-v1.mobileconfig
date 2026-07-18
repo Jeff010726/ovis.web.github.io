@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadContent</key>
+      <dict>
+        <key>com.google.Chrome</key>
+        <dict>
+          <key>Forced</key>
+          <array>
+            <dict>
+              <key>mcx_preference_settings</key>
+              <dict>
+                <key>WebAppInstallForceList</key>
+                <array>
+                  <dict>
+                    <key>url</key><string>https://ovis.aimorelogy.com/</string>
+                    <key>default_launch_container</key><string>window</string>
+                    <key>create_desktop_shortcut</key><true/>
+                    <key>custom_name</key><string>OVIS Workspace</string>
+                  </dict>
+                </array>
+                <key>ManagedConfigurationPerOrigin</key>
+                <array>
+                  <dict>
+                    <key>origin</key><string>https://ovis.aimorelogy.com</string>
+                    <key>managed_configuration_url</key><string>https://ovis.aimorelogy.com/managed/ovis-workspace-policy-v1.json</string>
+                    <key>managed_configuration_hash</key><string>4e0436a4ad1a5dbf10bda92b3548b982935a755b83227c3f4de2104202ca9d5a</string>
+                  </dict>
+                </array>
+                <key>WebUsbAllowDevicesForUrls</key>
+                <array>
+                  <dict>
+                    <key>devices</key>
+                    <array>
+                      <dict>
+                        <key>vendor_id</key><integer>13126</integer>
+                        <key>product_id</key><integer>4110</integer>
+                      </dict>
+                    </array>
+                    <key>urls</key>
+                    <array><string>https://ovis.aimorelogy.com</string></array>
+                  </dict>
+                </array>
+              </dict>
+            </dict>
+          </array>
+        </dict>
+        <key>com.microsoft.Edge</key>
+        <dict>
+          <key>Forced</key>
+          <array>
+            <dict>
+              <key>mcx_preference_settings</key>
+              <dict>
+                <key>WebAppInstallForceList</key>
+                <array>
+                  <dict>
+                    <key>url</key><string>https://ovis.aimorelogy.com/</string>
+                    <key>default_launch_container</key><string>window</string>
+                    <key>create_desktop_shortcut</key><true/>
+                    <key>custom_name</key><string>OVIS Workspace</string>
+                  </dict>
+                </array>
+                <key>ManagedConfigurationPerOrigin</key>
+                <array>
+                  <dict>
+                    <key>origin</key><string>https://ovis.aimorelogy.com</string>
+                    <key>managed_configuration_url</key><string>https://ovis.aimorelogy.com/managed/ovis-workspace-policy-v1.json</string>
+                    <key>managed_configuration_hash</key><string>4e0436a4ad1a5dbf10bda92b3548b982935a755b83227c3f4de2104202ca9d5a</string>
+                  </dict>
+                </array>
+                <key>WebUsbAllowDevicesForUrls</key>
+                <array>
+                  <dict>
+                    <key>devices</key>
+                    <array>
+                      <dict>
+                        <key>vendor_id</key><integer>13126</integer>
+                        <key>product_id</key><integer>4110</integer>
+                      </dict>
+                    </array>
+                    <key>urls</key>
+                    <array><string>https://ovis.aimorelogy.com</string></array>
+                  </dict>
+                </array>
+              </dict>
+            </dict>
+          </array>
+        </dict>
+      </dict>
+      <key>PayloadDisplayName</key><string>OVIS Workspace Browser Policies</string>
+      <key>PayloadIdentifier</key><string>com.aimorelogy.ovis.workspace.browser-policies</string>
+      <key>PayloadOrganization</key><string>Aimorelogy</string>
+      <key>PayloadType</key><string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadUUID</key><string>39BC85D1-AEB8-4B37-B7A4-E7329D4F98C2</string>
+      <key>PayloadVersion</key><integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key><string>Installs managed Chrome and Microsoft Edge policies for OVIS Workspace.</string>
+  <key>PayloadDisplayName</key><string>OVIS Workspace Support</string>
+  <key>PayloadIdentifier</key><string>com.aimorelogy.ovis.workspace</string>
+  <key>PayloadOrganization</key><string>Aimorelogy</string>
+  <key>PayloadRemovalDisallowed</key><false/>
+  <key>PayloadScope</key><string>System</string>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadUUID</key><string>2E441953-28F8-4D7E-8B4D-637808024AAD</string>
+  <key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>

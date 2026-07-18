@@ -491,6 +491,18 @@ test("blocks the device workspace when managed policy is missing", async ({ page
     await expect(link).toBeVisible();
     await expect(link.locator("svg")).toHaveCount(1);
   }
+  await expect(platformLinks[0]).toHaveAttribute(
+    "href",
+    "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.exe",
+  );
+  await expect(platformLinks[1]).toHaveAttribute(
+    "href",
+    "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.deb",
+  );
+  await expect(platformLinks[2]).toHaveAttribute(
+    "href",
+    "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.mobileconfig",
+  );
   const platformButtonStyles = await Promise.all(
     platformLinks.map((link) =>
       link.evaluate((element) => ({

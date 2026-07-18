@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/verify-managed-policy.mjs && tsc --noEmit -p tsconfig.app.json && vite build",
+    "build:installers": "scripts/build-installers.sh",
+    "build": "node scripts/verify-managed-policy.mjs && node scripts/verify-installers.mjs && tsc --noEmit -p tsconfig.app.json && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test:e2e": "playwright test"

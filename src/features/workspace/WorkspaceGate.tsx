@@ -14,13 +14,13 @@ import type { UseWorkspacePolicy } from "./workspace-policy.types";
 const WINDOWS_SETUP_URL =
   import.meta.env.VITE_WORKSPACE_SETUP_WINDOWS_URL ??
   import.meta.env.VITE_WORKSPACE_SETUP_URL ??
-  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup.exe";
+  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.exe";
 const LINUX_SETUP_URL =
   import.meta.env.VITE_WORKSPACE_SETUP_LINUX_URL ??
-  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup.deb";
+  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.deb";
 const MACOS_SETUP_URL =
   import.meta.env.VITE_WORKSPACE_SETUP_MACOS_URL ??
-  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup.mobileconfig";
+  "https://ovis.aimorelogy.com/downloads/OVIS-Workspace-Setup-v1.mobileconfig";
 
 interface WorkspaceGateProps {
   policy: UseWorkspacePolicy;

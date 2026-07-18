@@ -1,0 +1,9 @@
+Package: ovis-workspace-support
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Aimorelogy <support@aimorelogy.com>
+Description: Browser policies for OVIS Workspace
+ Installs managed Chrome, Chromium, and Microsoft Edge policies for
+ OVIS Workspace WebUSB access and managed web app configuration.
