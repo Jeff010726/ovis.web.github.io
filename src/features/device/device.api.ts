@@ -199,6 +199,42 @@ export async function fetchDeviceInfo(
   }
 }
 
+export async function resetDeviceNetwork(
+  apiBaseUrl: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), CONNECTION_TIMEOUT_MS);
+  const abortFromParent = () => controller.abort();
+  signal?.addEventListener("abort", abortFromParent, { once: true });
+
+  const requestOptions: RequestInit & { targetAddressSpace: "local" } = {
+    method: "POST",
+    mode: "cors",
+    cache: "no-store",
+    signal: controller.signal,
+    targetAddressSpace: "local",
+  };
+
+  try {
+    const response = await fetch(
+      `${apiBaseUrl.replace(/\/$/, "")}/device/network/reset`,
+      requestOptions,
+    );
+    if (response.status === 404) {
+      throw new DeviceConnectionError("DEVICE_NOT_FOUND");
+    }
+    if (!response.ok) {
+      throw new DeviceConnectionError("NETWORK_ERROR");
+    }
+  } catch (error) {
+    throw mapRequestError(error);
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
 export function buildDeviceApiBaseUrl(ipAddress: string): string | null {
   const normalized = ipAddress.trim();
   const octets = normalized.split(".");

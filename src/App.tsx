@@ -63,6 +63,7 @@ function DeviceWorkspace() {
               void connection.connectManualAddress(ipAddress)
             }
             onDisconnect={connection.disconnect}
+            onResetNetwork={() => connection.resetNetwork()}
             onRescan={() => void connection.rescan()}
             onRetry={() => void connection.retry()}
             onCancelInitialization={connection.cancelInitialization}

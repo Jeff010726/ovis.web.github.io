@@ -93,6 +93,7 @@ export interface UseDeviceConnection {
   connect(): Promise<void>;
   connectManualAddress(ipAddress: string): Promise<void>;
   disconnect(): void;
+  resetNetwork(): Promise<void>;
   rescan(): Promise<void>;
   retry(): Promise<void>;
   cancelInitialization(): void;

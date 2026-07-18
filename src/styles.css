@@ -2706,8 +2706,64 @@ a:focus-visible {
   margin-top: auto;
   padding-top: 15px;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.device-dashboard__reset-address {
+  min-height: 36px;
+  padding-inline: 11px;
+  color: #a4a4a4;
+  font-size: 9px;
+}
+
+.device-dashboard__utility-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.device-network-reset-confirmation {
+  right: 24px;
+  bottom: 70px;
+  left: 24px;
+  padding: 16px;
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  gap: 8px;
+  border: 1px solid #4c4c4c;
+  background: #0b0b0b;
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.device-network-reset-confirmation strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.device-network-reset-confirmation > span,
+.device-network-reset-confirmation > em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.6;
+}
+
+.device-network-reset-confirmation > em {
+  color: var(--danger);
+}
+
+.device-network-reset-confirmation > div {
+  display: flex;
   justify-content: flex-end;
   gap: 7px;
+}
+
+.device-network-reset-confirmation .button {
+  min-height: 34px;
+  padding-inline: 11px;
+  font-size: 9px;
 }
 
 @media (min-width: 1920px) {
@@ -3253,6 +3309,11 @@ a:focus-visible {
   .device-dashboard__actions {
     grid-column: 2;
   }
+
+  .device-network-reset-confirmation {
+    right: 24px;
+    left: 214px;
+  }
 }
 
 @media (max-width: 580px) {
@@ -3492,6 +3553,14 @@ a:focus-visible {
 
   .device-dashboard__actions {
     width: 100%;
+  }
+
+  .device-network-reset-confirmation {
+    width: 100%;
+    margin-top: 14px;
+    padding: 14px;
+    position: static;
+    box-shadow: none;
   }
 
   .config-section-nav__header {

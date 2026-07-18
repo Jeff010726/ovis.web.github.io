@@ -10,10 +10,12 @@ import {
   discoverDevices,
   fetchDeviceInfo,
   isSupportedBrowser,
+  resetDeviceNetwork,
 } from "./device.api";
 import {
   closeOvisUsbDevice,
   discoverAuthorizedOvisUsbDevices,
+  forgetOvisSubnet,
   getAuthorizedOvisUsbDevices,
   isWebUsbAvailable,
   onWebUsbDeviceChange,
@@ -50,6 +52,14 @@ const writeLastSuccessfulAddress = (apiBaseUrl: string) => {
     window.sessionStorage.setItem(LAST_DEVICE_ADDRESS_KEY, apiBaseUrl);
   } catch {
     // Discovery still works when session storage is unavailable.
+  }
+};
+
+const clearLastSuccessfulAddress = () => {
+  try {
+    window.sessionStorage.removeItem(LAST_DEVICE_ADDRESS_KEY);
+  } catch {
+    // The in-memory discovery hint is still cleared when storage is unavailable.
   }
 };
 
@@ -467,6 +477,31 @@ export function useDeviceConnection(): UseDeviceConnection {
     setConnectedAt(null);
   }, []);
 
+  const resetNetwork = useCallback(async () => {
+    if (applicationLockedRef.current) return;
+    const target = connectedTarget.current;
+    if (!target) throw new DeviceConnectionError("DEVICE_NOT_FOUND");
+
+    await resetDeviceNetwork(target.apiBaseUrl);
+    operationGeneration.current += 1;
+    forgetOvisSubnet(target.deviceId);
+    if (lastSuccessfulAddress.current === target.apiBaseUrl) {
+      lastSuccessfulAddress.current = null;
+      clearLastSuccessfulAddress();
+    }
+    connectedTarget.current = null;
+
+    const remaining = devicesRef.current.filter(
+      (entry) => entry.deviceId !== target.deviceId,
+    );
+    updateDevices(remaining);
+    setSelectedDeviceId(null);
+    setDevice(null);
+    setError(null);
+    setConnectedAt(null);
+    setState(remaining.length > 0 ? "results" : "idle");
+  }, [updateDevices]);
+
   const cancelInitialization = useCallback(() => {
     operationGeneration.current += 1;
     setState(devicesRef.current.length > 0 ? "results" : "idle");
@@ -610,6 +645,7 @@ export function useDeviceConnection(): UseDeviceConnection {
     connect,
     connectManualAddress,
     disconnect,
+    resetNetwork,
     rescan,
     retry,
     cancelInitialization,

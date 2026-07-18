@@ -1452,6 +1452,72 @@ test("hides AI controls omitted by device capabilities", async ({ page }) => {
   await expect(page.getByRole("switch", { name: "启用移动检测" })).toHaveCount(0);
 });
 
+test("resets the connected device IP only after explicit confirmation", async ({
+  page,
+}) => {
+  await page.addInitScript((deviceId) => {
+    localStorage.setItem("ovis-ncm-subnets", JSON.stringify({ [deviceId]: 42 }));
+  }, deviceInfo.device_id);
+  await mockConfigurationRead(page);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  let resetRequests = 0;
+  await page.route("**/api/v1/device/network/reset", async (route) => {
+    resetRequests += 1;
+    expect(route.request().method()).toBe("POST");
+    expect(await route.request().headerValue("content-type")).toBeNull();
+    await route.fulfill({ status: 202, body: "" });
+  });
+
+  await page.getByRole("button", { name: "重置设备 IP" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "重置这台设备的 IP 地址？",
+  });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText("未初始化 USB 设备");
+  await page.screenshot({ path: "/tmp/ovis-network-reset-confirmation.png" });
+  await confirmation.getByRole("button", { name: "取消" }).click();
+  await expect(confirmation).toHaveCount(0);
+  expect(resetRequests).toBe(0);
+
+  await page.getByRole("button", { name: "重置设备 IP" }).click();
+  await confirmation.getByRole("button", { name: "重置并重启" }).click();
+
+  await expect(page.getByRole("button", { name: "搜索设备" })).toBeVisible();
+  await expect(page.getByText("设备配置", { exact: true })).toHaveCount(0);
+  expect(resetRequests).toBe(1);
+  const rememberedSubnet = await page.evaluate((deviceId) => {
+    const stored = JSON.parse(localStorage.getItem("ovis-ncm-subnets") ?? "{}") as Record<string, number>;
+    return stored[deviceId];
+  }, deviceInfo.device_id);
+  expect(rememberedSubnet).toBeUndefined();
+});
+
+test("keeps the device IP reset confirmation inside a mobile viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockConfigurationRead(page);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("button", { name: "重置设备 IP" }).click();
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "重置这台设备的 IP 地址？",
+  });
+  await expect(confirmation).toBeVisible();
+  const bounds = await confirmation.boundingBox();
+  expect(bounds?.x).toBeGreaterThanOrEqual(0);
+  expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: "/tmp/ovis-network-reset-confirmation-mobile.png",
+    fullPage: true,
+  });
+});
+
 test(RESPONSIVE_CONFIG_TEST_TITLE, async ({
   page,
 }) => {

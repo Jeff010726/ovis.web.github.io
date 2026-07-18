@@ -133,6 +133,22 @@ export function rememberOvisSubnet(deviceId: string, subnet: number) {
   }
 }
 
+export function forgetOvisSubnet(deviceId: string) {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(OVIS_SUBNET_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    delete stored[deviceId];
+    if (Object.keys(stored).length === 0) {
+      window.localStorage.removeItem(OVIS_SUBNET_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(OVIS_SUBNET_STORAGE_KEY, JSON.stringify(stored));
+    }
+  } catch {
+    // A stale discovery hint is harmless when storage is unavailable or invalid.
+  }
+}
+
 export function getRememberedOvisDeviceHosts(): string[] {
   try {
     const stored = JSON.parse(

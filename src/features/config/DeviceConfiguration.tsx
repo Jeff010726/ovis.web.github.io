@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ImageOff,
   LoaderCircle,
+  Network,
   PersonStanding,
   RefreshCw,
   RotateCcw,
@@ -40,6 +41,7 @@ interface DeviceConfigurationProps {
   connectedAt: Date | null;
   applicationLocked: boolean;
   onDisconnect: () => void;
+  onResetNetwork: () => Promise<void>;
   onRescan: () => void;
   onApplicationLockChange: (locked: boolean) => void;
   onDeviceRecovered: (apiBaseUrl: string, info: OvisDeviceInfo) => void;
@@ -402,6 +404,7 @@ export function DeviceConfiguration({
   connectedAt,
   applicationLocked,
   onDisconnect,
+  onResetNetwork,
   onRescan,
   onApplicationLockChange,
   onDeviceRecovered,
@@ -414,6 +417,9 @@ export function DeviceConfiguration({
     onDeviceRecovered,
   });
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmNetworkReset, setConfirmNetworkReset] = useState(false);
+  const [networkResetting, setNetworkResetting] = useState(false);
+  const [networkResetError, setNetworkResetError] = useState<string | null>(null);
   const [activeSection, setActiveSection] =
     useState<ConfigSectionId>("video");
   const editorRef = useRef<HTMLDivElement>(null);
@@ -579,6 +585,17 @@ export function DeviceConfiguration({
         draft.detection.human_pose.threshold = value;
       }
     });
+  };
+
+  const resetNetworkAddress = async () => {
+    setNetworkResetting(true);
+    setNetworkResetError(null);
+    try {
+      await onResetNetwork();
+    } catch {
+      setNetworkResetError(t("config.networkResetFailed"));
+      setNetworkResetting(false);
+    }
   };
 
   return (
@@ -1097,25 +1114,79 @@ export function DeviceConfiguration({
               </dd>
             </div>
           </dl>
+          {confirmNetworkReset && (
+            <div
+              className="device-network-reset-confirmation"
+              role="alertdialog"
+              aria-labelledby="network-reset-title"
+              aria-describedby="network-reset-detail"
+            >
+              <strong id="network-reset-title">{t("config.networkResetConfirmTitle")}</strong>
+              <span id="network-reset-detail">{t("config.networkResetConfirmDetail")}</span>
+              {networkResetError && <em role="alert">{networkResetError}</em>}
+              <div>
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  disabled={networkResetting}
+                  onClick={() => {
+                    setConfirmNetworkReset(false);
+                    setNetworkResetError(null);
+                  }}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  className="button button--secondary"
+                  type="button"
+                  disabled={networkResetting}
+                  onClick={() => void resetNetworkAddress()}
+                >
+                  {networkResetting ? (
+                    <LoaderCircle className="button-spinner" size={14} />
+                  ) : (
+                    <Network size={14} />
+                  )}
+                  {networkResetting
+                    ? t("config.networkResetting")
+                    : t("config.networkResetConfirm")}
+                </button>
+              </div>
+            </div>
+          )}
           <div className="device-dashboard__actions">
             <button
-              className="icon-button"
+              className="button button--ghost device-dashboard__reset-address"
               type="button"
-              onClick={onRescan}
-              title={t("config.rescanTitle")}
-              disabled={applicationLocked || isBusy}
+              disabled={applicationLocked || isBusy || networkResetting}
+              onClick={() => {
+                setConfirmNetworkReset(true);
+                setNetworkResetError(null);
+              }}
             >
-              <RefreshCw size={16} />
+              <Network size={14} />
+              {t("config.networkReset")}
             </button>
-            <button
-              className="icon-button"
-              type="button"
-              onClick={onDisconnect}
-              title={t("config.disconnectTitle")}
-              disabled={applicationLocked || isBusy}
-            >
-              <Unplug size={16} />
-            </button>
+            <div className="device-dashboard__utility-actions">
+              <button
+                className="icon-button"
+                type="button"
+                onClick={onRescan}
+                title={t("config.rescanTitle")}
+                disabled={applicationLocked || isBusy || networkResetting}
+              >
+                <RefreshCw size={16} />
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={onDisconnect}
+                title={t("config.disconnectTitle")}
+                disabled={applicationLocked || isBusy || networkResetting}
+              >
+                <Unplug size={16} />
+              </button>
+            </div>
           </div>
         </aside>
       </div>

@@ -44,6 +44,7 @@ interface DeviceConnectorProps {
   onConnect: () => void;
   onManualConnect: (ipAddress: string) => void;
   onDisconnect: () => void;
+  onResetNetwork: () => Promise<void>;
   onRescan: () => void;
   onRetry: () => void;
   onCancelInitialization: () => void;
@@ -130,6 +131,7 @@ export function DeviceConnector({
   onConnect,
   onManualConnect,
   onDisconnect,
+  onResetNetwork,
   onRescan,
   onRetry,
   onCancelInitialization,
@@ -150,6 +152,7 @@ export function DeviceConnector({
         connectedAt={connectedAt}
         applicationLocked={applicationLocked}
         onDisconnect={onDisconnect}
+        onResetNetwork={onResetNetwork}
         onRescan={onRescan}
         onApplicationLockChange={onApplicationLockChange}
         onDeviceRecovered={onDeviceRecovered}
