@@ -200,6 +200,7 @@ interface MockPolicyUsbDevice {
   failRead?: boolean;
   invalidProtocol?: boolean;
   disconnectOnCommit?: boolean;
+  deferAuthorization?: boolean;
 }
 
 async function mockPolicyWebUsbDevices(
@@ -308,6 +309,7 @@ async function mockPolicyWebUsbDevices(
         device: usbDevice,
         isConnected: () => connected,
         isAuthorized: () => authorized,
+        deferAuthorization: specification.deferAuthorization ?? false,
         authorize: () => {
           authorized = true;
           return usbDevice;
@@ -328,6 +330,7 @@ async function mockPolicyWebUsbDevices(
     });
     let requestCount = 0;
     let lastRequestOptions: unknown = null;
+    let resolvePendingRequest: (() => void) | null = null;
     Object.defineProperty(navigator, "usb", {
       configurable: true,
       value: {
@@ -342,6 +345,11 @@ async function mockPolicyWebUsbDevices(
             (candidate) => candidate.isConnected() && !candidate.isAuthorized(),
           );
           if (!entry) throw new DOMException("No device selected", "NotFoundError");
+          if (entry.deferAuthorization) {
+            return new Promise((resolve) => {
+              resolvePendingRequest = () => resolve(entry.authorize());
+            });
+          }
           return entry.authorize();
         },
         addEventListener: events.addEventListener.bind(events),
@@ -362,6 +370,10 @@ async function mockPolicyWebUsbDevices(
           return lastRequestOptions;
         },
       },
+    });
+    Object.defineProperty(window, "__ovisResolveUsbRequest", {
+      configurable: true,
+      value: () => resolvePendingRequest?.(),
     });
     Object.defineProperty(window, "__ovisUsbCommandLog", {
       configurable: true,
@@ -818,6 +830,38 @@ test("falls back to the native USB chooser from the search action", async ({ pag
       },
     ],
   });
+});
+
+test("shows network devices while the native USB chooser remains open", async ({
+  page,
+}) => {
+  const usbDeviceId = "OVIS-1842-USBDEFERRED00001";
+  await mockPolicyWebUsbDevices(page, [
+    { deviceId: usbDeviceId, authorized: false, deferAuthorization: true },
+  ]);
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) === "192.168.42.1") return fulfillJson(route, deviceInfo);
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+
+  await expect(
+    page.getByRole("radio", { name: /OVIS Camera OVIS-1842-00123456/ }),
+  ).toBeVisible();
+  await expect(page.getByText("网络扫描已完成，正在等待 USB 设备授权。")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "正在搜索 OVIS 设备" }),
+  ).toHaveCount(0);
+
+  await page.evaluate(() => {
+    (
+      window as unknown as { __ovisResolveUsbRequest: () => void }
+    ).__ovisResolveUsbRequest();
+  });
+  await expect(page.getByRole("radio", { name: new RegExp(usbDeviceId) })).toBeVisible();
+  await expect(page.getByText("网络扫描已完成，正在等待 USB 设备授权。")).toHaveCount(0);
 });
 
 test("keeps network results when the native USB chooser is cancelled", async ({ page }) => {

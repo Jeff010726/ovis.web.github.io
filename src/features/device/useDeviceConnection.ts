@@ -120,6 +120,7 @@ export function useDeviceConnection(): UseDeviceConnection {
   const [usbPreflightReady, setUsbPreflightReady] = useState(
     !isWebUsbAvailable(),
   );
+  const [usbAuthorizationPending, setUsbAuthorizationPending] = useState(false);
   const [usbIssue, setUsbIssue] = useState<string | null>(null);
   const applicationLockedRef = useRef(startupPending !== null);
   const operationGeneration = useRef(0);
@@ -258,6 +259,9 @@ export function useDeviceConnection(): UseDeviceConnection {
     setUsbIssue(null);
     setDiscoveryReport(null);
 
+    const shouldRequestUsbDevice = manualUsbFallbackRef.current;
+    setUsbAuthorizationPending(shouldRequestUsbDevice);
+
     const usbDiscovery = discoverAuthorizedOvisUsbDevices().catch(
       (discoveryFailure: unknown) => ({
         devices: [],
@@ -268,7 +272,7 @@ export function useDeviceConnection(): UseDeviceConnection {
         ],
       }),
     );
-    const requestedUsbDevice = manualUsbFallbackRef.current
+    const requestedUsbDevice = shouldRequestUsbDevice
       ? requestOvisUsbDevice()
           .then((session) => ({ session, error: null as string | null }))
           .catch((requestError: unknown) => ({
@@ -288,26 +292,20 @@ export function useDeviceConnection(): UseDeviceConnection {
     );
 
     try {
-      const [networkReport, usbReport, requested] = await Promise.all([
+      const [networkReport, usbReport] = await Promise.all([
         networkDiscovery,
         usbDiscovery,
-        requestedUsbDevice,
       ]);
       if (operationGeneration.current !== generation) return;
 
       scanController.current = null;
-      if (requested.session) manualUsbFallbackRef.current = true;
       const usbSessionsById = new Map(
         usbReport.devices.map((session) => [session.info.device_id, session]),
       );
-      if (requested.session) {
-        usbSessionsById.set(requested.session.info.device_id, requested.session);
-      }
       const usbSessions = [...usbSessionsById.values()];
-      const usbIssues = [requested.error, ...usbReport.errors].filter(
-        (issue): issue is string => issue !== null,
+      setUsbIssue(
+        usbReport.errors.length > 0 ? usbReport.errors.join(" · ") : null,
       );
-      setUsbIssue(usbIssues.length > 0 ? usbIssues.join(" · ") : null);
       const initialized = networkReport.devices.filter(
         (entry): entry is InitializedDevice =>
           entry.initialization === "initialized",
@@ -330,20 +328,80 @@ export function useDeviceConnection(): UseDeviceConnection {
       updateDevices(combinedDevices);
       const reportError =
         combinedDevices.length > 0 ? null : reportErrorCode(report);
-      if (reportError) {
+      if (reportError && !shouldRequestUsbDevice) {
         setError(reportError);
         setState("error");
       } else {
         setState("results");
       }
+
+      void requestedUsbDevice.then(async (requested) => {
+        if (operationGeneration.current !== generation) {
+          if (requested.session) {
+            await closeOvisUsbDevice(requested.session).catch(() => undefined);
+          }
+          return;
+        }
+
+        setUsbAuthorizationPending(false);
+        if (requested.error) {
+          setUsbIssue((currentIssue) =>
+            currentIssue ? `${currentIssue} · ${requested.error}` : requested.error,
+          );
+        }
+
+        if (!requested.session) {
+          if (devicesRef.current.length === 0 && reportError) {
+            setError(reportError);
+            setState("error");
+          }
+          return;
+        }
+
+        manualUsbFallbackRef.current = true;
+        const existing = devicesRef.current.find(
+          (entry) => entry.deviceId === requested.session?.info.device_id,
+        );
+        if (existing?.initialization === "initialized") {
+          await closeOvisUsbDevice(requested.session).catch(() => undefined);
+          return;
+        }
+        if (
+          existing?.initialization === "uninitialized" &&
+          existing.usbSession.device !== requested.session.device
+        ) {
+          await closeOvisUsbDevice(existing.usbSession).catch(() => undefined);
+        }
+
+        const initializedDevices = devicesRef.current.filter(
+          (entry): entry is InitializedDevice =>
+            entry.initialization === "initialized",
+        );
+        const uninitializedDevices = devicesRef.current.filter(
+          (entry) =>
+            entry.initialization === "uninitialized" &&
+            entry.deviceId !== requested.session?.info.device_id,
+        );
+        const nextDevices = mergeDiscoveredDevices(initializedDevices, [
+          ...uninitializedDevices,
+          toUninitializedDevice(requested.session),
+        ]);
+        updateDevices(nextDevices);
+        setDiscoveryReport((currentReport) =>
+          currentReport ? { ...currentReport, devices: nextDevices } : currentReport,
+        );
+        setError(null);
+        setState("results");
+      });
     } catch {
-      void Promise.all([usbDiscovery, requestedUsbDevice]).then(
-        ([usbReport, requested]) =>
-          Promise.allSettled([
-            ...usbReport.devices.map(closeOvisUsbDevice),
-            ...(requested.session ? [closeOvisUsbDevice(requested.session)] : []),
-          ]),
+      void usbDiscovery.then((usbReport) =>
+        Promise.allSettled(usbReport.devices.map(closeOvisUsbDevice)),
       );
+      void requestedUsbDevice.then(async (requested) => {
+        if (requested.session) {
+          await closeOvisUsbDevice(requested.session).catch(() => undefined);
+        }
+      });
       if (
         operationGeneration.current !== generation ||
         controller.signal.aborted
@@ -351,6 +409,7 @@ export function useDeviceConnection(): UseDeviceConnection {
         return;
       }
       scanController.current = null;
+      setUsbAuthorizationPending(false);
       setError("SCAN_NETWORK_ERROR");
       setState("error");
     }
@@ -361,6 +420,7 @@ export function useDeviceConnection(): UseDeviceConnection {
     scanController.current?.abort();
     scanController.current = null;
     operationGeneration.current += 1;
+    setUsbAuthorizationPending(false);
     setState(devicesRef.current.length > 0 ? "results" : "idle");
     setError(null);
   }, []);
@@ -665,6 +725,7 @@ export function useDeviceConnection(): UseDeviceConnection {
     applicationLocked,
     usbAvailable: isWebUsbAvailable(),
     usbPreflightReady,
+    usbAuthorizationPending,
     usbIssue,
     discoveryReport,
     scan,

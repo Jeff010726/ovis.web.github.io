@@ -37,6 +37,7 @@ interface DeviceConnectorProps {
   applicationLocked: boolean;
   usbAvailable: boolean;
   usbPreflightReady: boolean;
+  usbAuthorizationPending: boolean;
   usbIssue: string | null;
   onScan: () => void;
   onCancelScan: () => void;
@@ -124,6 +125,7 @@ export function DeviceConnector({
   applicationLocked,
   usbAvailable,
   usbPreflightReady,
+  usbAuthorizationPending,
   usbIssue,
   onScan,
   onCancelScan,
@@ -283,10 +285,15 @@ export function DeviceConnector({
           </p>
         </header>
 
-        {(!hasUninitializedDevice || usbIssue) && (
+        {(!hasUninitializedDevice || usbIssue || usbAuthorizationPending) && (
           <div className="usb-policy-notice usb-policy-notice--results">
             <Usb size={15} />
-            <span>{usbIssue ?? (usbAvailable ? t("usb.searchHint") : t("usb.unsupported"))}</span>
+            <span>
+              {usbAuthorizationPending
+                ? t("usb.authorizationPending")
+                : usbIssue ??
+                  (usbAvailable ? t("usb.searchHint") : t("usb.unsupported"))}
+            </span>
           </div>
         )}
 
