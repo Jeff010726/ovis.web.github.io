@@ -101,7 +101,7 @@ const configCapabilities = {
           id: "1080p",
           width: 1920,
           height: 1080,
-          fps_options: [15, 25, 30],
+          fps_options: [15, 25, 30, 60],
           bitrate_min: 512,
           bitrate_max: 15000,
         },
@@ -1413,6 +1413,11 @@ test("edits, validates, saves, applies, and polls configuration", async ({
   page,
 }) => {
   let savedValues = structuredClone(currentConfig.values);
+  Object.assign(savedValues.video.main, {
+    sns_type: "OV_OS08A20_MIPI_8M_30FPS_12BIT",
+    VTS: 2250,
+    sensor_mode: "30fps",
+  });
   let activeRevision = currentConfig.revision;
   let validatePayload: Record<string, unknown> | null = null;
   let savePayload: Record<string, unknown> | null = null;
@@ -1477,15 +1482,21 @@ test("edits, validates, saves, applies, and polls configuration", async ({
   await page.getByRole("button", { name: "连接", exact: true }).click();
   const mainStream = page.getByRole("region", { name: "主码流" });
   await expect(mainStream).toBeVisible();
+  const mainFps = mainStream.getByRole("combobox", { name: "帧率" });
+  const subFps = page
+    .getByRole("region", { name: "子码流" })
+    .getByRole("combobox", { name: "帧率" });
+  await expect(mainFps.locator('option[value="60"]')).toHaveCount(1);
+  await expect(subFps.locator('option[value="60"]')).toHaveCount(0);
 
-  await mainStream.getByRole("spinbutton").fill("9000");
+  await mainFps.selectOption("60");
   await page.getByRole("switch", { name: "启用 OSD" }).click();
   await expect(page.getByText("有未保存修改")).toBeVisible();
   const saveButton = page.getByRole("button", { name: "保存并应用" });
   await expect(saveButton).toBeEnabled();
   await saveButton.click();
 
-  await expect(page.getByText("配置已保存，设备正在重启").first()).toBeVisible();
+  await expect(page.getByText("配置已保存，视频服务正在重启").first()).toBeVisible();
   await expect(page.getByTitle("重新搜索")).toBeDisabled();
   await expect(page.getByRole("button", { name: "恢复默认" })).toBeDisabled();
   const pendingApplication = await page.evaluate(() =>
@@ -1517,8 +1528,27 @@ test("edits, validates, saves, applies, and polls configuration", async ({
   ).toBeNull();
   expect(validatePayload).toMatchObject({
     revision: "a81f36c2",
-    values: { video: { main: { bitrate_kbps: 9000 } }, overlay: { enabled: false } },
+    values: {
+      video: {
+        main: {
+          profile: "1080p",
+          fps: 60,
+          bitrate_kbps: 10000,
+        },
+      },
+      overlay: { enabled: false },
+    },
   });
+  expect(
+    (validatePayload as { values: typeof currentConfig.values }).values.video.main,
+  ).toEqual({
+    profile: "1080p",
+    fps: 60,
+    bitrate_kbps: 10000,
+  });
+  expect(JSON.stringify(validatePayload)).not.toMatch(
+    /sns_type|vts|sensor(?:_|\s*)mode/i,
+  );
   expect(savePayload).toEqual(validatePayload);
   expect(applyPayload).toEqual({ revision: "b929d204" });
 });

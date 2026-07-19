@@ -40,6 +40,60 @@ const MAX_RESET_TASK_POLLS = 60;
 
 const cloneValues = (values: DeviceConfigValues) => structuredClone(values);
 
+const serializeConfigValues = (
+  values: DeviceConfigValues,
+): DeviceConfigValues => {
+  const serialized: DeviceConfigValues = {
+    video: {
+      main: {
+        profile: values.video.main.profile,
+        fps: values.video.main.fps,
+        bitrate_kbps: values.video.main.bitrate_kbps,
+      },
+      sub: {
+        enabled: values.video.sub.enabled,
+        profile: values.video.sub.profile,
+        fps: values.video.sub.fps,
+        bitrate_kbps: values.video.sub.bitrate_kbps,
+      },
+    },
+    overlay: {
+      enabled: values.overlay.enabled,
+    },
+    detection: {
+      person: {
+        enabled: values.detection.person.enabled,
+        threshold: values.detection.person.threshold,
+      },
+      face: {
+        enabled: values.detection.face.enabled,
+        threshold: values.detection.face.threshold,
+      },
+      motion: {
+        enabled: values.detection.motion.enabled,
+        sensitivity: values.detection.motion.sensitivity,
+      },
+    },
+  };
+
+  if (values.detection.human_pose) {
+    serialized.detection.human_pose = {
+      enabled: values.detection.human_pose.enabled,
+      threshold: values.detection.human_pose.threshold,
+    };
+  }
+  if (values.detection.object_tracking) {
+    serialized.detection.object_tracking = {
+      enabled: values.detection.object_tracking.enabled,
+      search_method: values.detection.object_tracking.search_method,
+      use_kalman: values.detection.object_tracking.use_kalman,
+      score_threshold: values.detection.object_tracking.score_threshold,
+    };
+  }
+
+  return serialized;
+};
+
 const formatError = (error: unknown) => {
   if (error instanceof ConfigRequestError) return error.message;
   if (error instanceof ConfigReconnectTimeoutError) return error.message;
@@ -511,7 +565,7 @@ export function useDeviceConfiguration({
     }
 
     const controller = beginOperation();
-    const payload = { revision, values: cloneValues(draft) };
+    const payload = { revision, values: serializeConfigValues(draft) };
     setApplicationState("saving");
     onApplicationLockChange(true);
     setRequestError(null);
