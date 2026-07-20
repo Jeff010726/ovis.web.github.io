@@ -101,6 +101,40 @@ const formatConnectionTime = (value: Date | null, locale: string) =>
 const profileLabel = (profile: VideoProfileCapability) =>
   `${profile.id} · ${profile.width}×${profile.height}`;
 
+const processingSizeConstraints = (
+  capability: ProcessingSizeCapability,
+) => {
+  if (capability.constraints) return capability.constraints;
+  if (
+    Number.isFinite(capability.min_width) &&
+    Number.isFinite(capability.max_width) &&
+    Number.isFinite(capability.min_height) &&
+    Number.isFinite(capability.max_height) &&
+    Number.isFinite(capability.step)
+  ) {
+    return {
+      minWidth: capability.min_width,
+      maxWidth: capability.max_width,
+      minHeight: capability.min_height,
+      maxHeight: capability.max_height,
+      widthStep: capability.step,
+      heightStep: capability.step,
+      presets: capability.default ? [capability.default] : [],
+    };
+  }
+  return undefined;
+};
+
+const processingSizeDefault = (
+  capability: ProcessingSizeCapability,
+): ProcessingSize | undefined => {
+  if (capability.default) return capability.default;
+  if (Number.isFinite(capability.width) && Number.isFinite(capability.height)) {
+    return { width: capability.width!, height: capability.height! };
+  }
+  return undefined;
+};
+
 function profileOptions(
   profiles: VideoProfileCapability[],
   currentProfile: string,
@@ -252,7 +286,7 @@ function ProcessingSizeEditor({
   onChange,
 }: ProcessingSizeEditorProps) {
   const { t } = useTranslation();
-  const constraints = capability.constraints;
+  const constraints = processingSizeConstraints(capability);
   const hasEditableConstraints =
     constraints !== undefined &&
     Number.isFinite(constraints.minWidth) &&
@@ -515,12 +549,11 @@ function ObjectTrackingRow({
         <ProcessingSizeEditor
           label={t("config.processingSize.trackingDetection")}
           value={
-            values.detection_processing_size ?? {
-              width: (capability.detection_processing_size ??
-                capability.detectionProcessingSize)!.width,
-              height: (capability.detection_processing_size ??
-                capability.detectionProcessingSize)!.height,
-            }
+            values.detection_processing_size ??
+            processingSizeDefault(
+              (capability.detection_processing_size ??
+                capability.detectionProcessingSize)!,
+            )!
           }
           capability={
             (capability.detection_processing_size ??
@@ -534,12 +567,11 @@ function ObjectTrackingRow({
         <ProcessingSizeEditor
           label={t("config.processingSize.tracking")}
           value={
-            values.tracking_processing_size ?? {
-              width: (capability.tracking_processing_size ??
-                capability.trackingProcessingSize)!.width,
-              height: (capability.tracking_processing_size ??
-                capability.trackingProcessingSize)!.height,
-            }
+            values.tracking_processing_size ??
+            processingSizeDefault(
+              (capability.tracking_processing_size ??
+                capability.trackingProcessingSize)!,
+            )!
           }
           capability={
             (capability.tracking_processing_size ??
@@ -554,7 +586,7 @@ function ObjectTrackingRow({
 }
 
 const TPU_FEATURE_IDS: TpuFeatureId[] = [
-  "person",
+  "object",
   "face",
   "human_pose",
   "object_tracking",
@@ -622,15 +654,20 @@ export function DeviceConfiguration({
     outputCapabilities?.rtsp.supported !== true ||
     outputValues?.rtsp.enabled === true;
   const motionCapability = configuration.capabilities?.ai?.motion_detection;
+  const motionFeatureCapability = configuration.capabilities?.ai?.features.find(
+    (feature) => feature.id === "motion",
+  );
   const motionDetectionSupported =
     typeof motionCapability === "object"
       ? motionCapability.supported
       : motionCapability === true;
   const motionProcessingCapability =
-    typeof motionCapability === "object"
+    motionFeatureCapability?.processing_size ??
+    motionFeatureCapability?.processingSize ??
+    (typeof motionCapability === "object"
       ? motionCapability.processing_size ?? motionCapability.processingSize
       : configuration.capabilities?.ai?.motion_processing_size ??
-        configuration.capabilities?.ai?.motionProcessingSize;
+        configuration.capabilities?.ai?.motionProcessingSize);
   const configSections = useMemo<ConfigSection[]>(() => {
     const sectionIds: Array<Pick<ConfigSection, "id" | "labelKey">> = [
       { id: "video", labelKey: "config.sections.video" },
@@ -799,7 +836,7 @@ export function DeviceConfiguration({
       configuration.draft !== null &&
       TPU_FEATURE_IDS.some((id) => {
         if (id === featureId) return false;
-        if (id === "person" || id === "face") {
+        if (id === "object" || id === "face") {
           return configuration.draft?.detection[id].enabled === true;
         }
         return configuration.draft?.detection[id]?.enabled === true;
@@ -816,7 +853,7 @@ export function DeviceConfiguration({
         enabled &&
         configuration.capabilities?.ai?.max_active_tpu_features === 1
       ) {
-        draft.detection.person.enabled = false;
+        draft.detection.object.enabled = false;
         draft.detection.face.enabled = false;
         if (draft.detection.human_pose) {
           draft.detection.human_pose.enabled = false;
@@ -826,7 +863,7 @@ export function DeviceConfiguration({
         }
       }
 
-      if (featureId === "person" || featureId === "face") {
+      if (featureId === "object" || featureId === "face") {
         draft.detection[featureId].enabled = enabled;
       } else if (draft.detection[featureId]) {
         draft.detection[featureId].enabled = enabled;
@@ -835,11 +872,11 @@ export function DeviceConfiguration({
   };
 
   const setTpuThreshold = (
-    featureId: "person" | "face" | "human_pose",
+    featureId: "object" | "face" | "human_pose",
     value: number,
   ) => {
     configuration.updateDraft((draft) => {
-      if (featureId === "person" || featureId === "face") {
+      if (featureId === "object" || featureId === "face") {
         draft.detection[featureId].threshold = value;
       } else if (draft.detection.human_pose) {
         draft.detection.human_pose.threshold = value;
@@ -1332,19 +1369,19 @@ export function DeviceConfiguration({
                             : draft.detection[capability.id];
                         if (!values) return null;
                         const title =
-                          capability.id === "person"
+                          capability.id === "object"
                             ? t("config.detection.objectDetection")
                             : capability.id === "face"
                               ? t("config.detection.face")
                               : t("config.detection.humanPose");
                         const toggleLabel =
-                          capability.id === "person"
+                          capability.id === "object"
                             ? t("config.detection.enablePerson")
                             : capability.id === "face"
                               ? t("config.detection.enableFace")
                               : t("config.detection.enableHumanPose");
                         const icon =
-                          capability.id === "person" ? (
+                          capability.id === "object" ? (
                             <Settings2 size={17} />
                           ) : capability.id === "face" ? (
                             <ScanFace size={17} />
@@ -1357,29 +1394,26 @@ export function DeviceConfiguration({
                         const processingSize =
                           values.processing_size ??
                           (processingCapability
-                            ? {
-                                width: processingCapability.width,
-                                height: processingCapability.height,
-                              }
+                            ? processingSizeDefault(processingCapability)
                             : undefined);
                         const modelDetail =
-                          capability.id === "person"
+                          capability.id === "object"
                             ? `${t("config.detection.currentModel")}: ${
                                 activeDetectionModel?.name ??
-                                draft.detection.person.model_name ??
-                                capability.model
+                                draft.detection.object.model.runtime_model ??
+                                draft.detection.object.model.id ??
+                                capability.name
                               } · ${t("config.detection.source")}: ${
                                 activeDetectionModel ||
-                                draft.detection.person.model_source === "custom"
+                                draft.detection.object.model.source === "custom"
                                   ? t("config.detection.customSource")
                                   : t("config.detection.builtinSource")
                               } · ${t("config.detection.runtimeStatus")}: ${
-                                draft.detection.person.runtime_status ??
-                                (values.enabled
+                                values.enabled
                                   ? t("common.enabled")
-                                  : t("common.disabled"))
+                                  : t("common.disabled")
                               }`
-                            : capability.model;
+                            : capability.model ?? capability.name;
 
                         return (
                           <DetectionRow
@@ -1390,7 +1424,7 @@ export function DeviceConfiguration({
                             supported
                             enabled={
                               values.enabled ||
-                              (capability.id === "person" &&
+                              (capability.id === "object" &&
                                 activeDetectionModel?.active === true)
                             }
                             value={values.threshold}
@@ -1405,7 +1439,7 @@ export function DeviceConfiguration({
                             }
                             onValue={(value) =>
                               setTpuThreshold(
-                                capability.id as "person" | "face" | "human_pose",
+                                capability.id as "object" | "face" | "human_pose",
                                 value,
                               )
                             }
@@ -1413,7 +1447,7 @@ export function DeviceConfiguration({
                             processingCapability={processingCapability}
                             onProcessingSize={(value) =>
                               configuration.updateDraft((nextDraft) => {
-                                if (capability.id === "person" || capability.id === "face") {
+                                if (capability.id === "object" || capability.id === "face") {
                                   nextDraft.detection[capability.id].processing_size = value;
                                 } else if (nextDraft.detection.human_pose) {
                                   nextDraft.detection.human_pose.processing_size = value;
@@ -1449,10 +1483,7 @@ export function DeviceConfiguration({
                           processingSize={
                             configuration.draft.detection.motion.processing_size ??
                             (motionProcessingCapability
-                              ? {
-                                  width: motionProcessingCapability.width,
-                                  height: motionProcessingCapability.height,
-                                }
+                              ? processingSizeDefault(motionProcessingCapability)
                               : undefined)
                           }
                           processingCapability={motionProcessingCapability}

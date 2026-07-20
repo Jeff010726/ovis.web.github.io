@@ -7,7 +7,7 @@
     "dev": "vite",
     "build:installers": "scripts/build-installers.sh",
     "build:installers:macos": "scripts/build-macos-installers.sh",
-    "generate:models-api": "openapi-typescript .debug/openapi-models.yaml -o src/features/models/model.openapi.ts",
+    "generate:models-api": "openapi-typescript .debug/ovis-manager/openapi-models.yaml -o src/features/models/model.openapi.ts",
     "build": "node scripts/verify-managed-policy.mjs && node scripts/verify-installers.mjs && tsc --noEmit -p tsconfig.app.json && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

@@ -12,7 +12,7 @@ export interface StreamCapability {
 }
 
 export type TpuFeatureId =
-  | "person"
+  | "object"
   | "face"
   | "human_pose"
   | "object_tracking";
@@ -34,14 +34,24 @@ export interface ProcessingSizeConstraints {
   presets?: ProcessingSize[];
 }
 
-export interface ProcessingSizeCapability extends ProcessingSize {
+export interface ProcessingSizeCapability {
+  width?: number;
+  height?: number;
+  fixed?: boolean;
+  min_width?: number;
+  max_width?: number;
+  min_height?: number;
+  max_height?: number;
+  step?: number;
+  default?: ProcessingSize;
   constraints?: ProcessingSizeConstraints;
 }
 
 export interface AiFeatureCapability {
   id: string;
   name: string;
-  model: string;
+  model?: string;
+  model_selectable?: boolean;
   search_methods?: ObjectTrackingSearchMethod[];
   processing_size?: ProcessingSizeCapability;
   processingSize?: ProcessingSizeCapability;
@@ -82,9 +92,12 @@ export interface ConfigCapabilities {
   };
   features: {
     osd: boolean;
+    object_detection?: boolean;
     person_detection?: boolean;
     face_detection?: boolean;
     motion_detection?: boolean;
+    human_pose?: boolean;
+    object_tracking?: boolean;
   };
   ai?: AiCapabilities;
   outputs?: OutputCapabilities;
@@ -113,14 +126,15 @@ export interface DeviceConfigValues {
     enabled: boolean;
   };
   detection: {
-    person: {
+    object: {
       enabled: boolean;
       threshold: number;
-      processing_size?: ProcessingSize;
-      model_id?: string | null;
-      model_name?: string;
-      model_source?: "builtin" | "custom";
-      runtime_status?: string;
+      processing_size: ProcessingSize;
+      model: {
+        source: "builtin" | "custom";
+        id: string;
+        runtime_model: string;
+      };
     };
     face: {
       enabled: boolean;

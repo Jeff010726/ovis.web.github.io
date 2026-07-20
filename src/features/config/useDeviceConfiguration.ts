@@ -66,12 +66,11 @@ const serializeConfigValues = (
       enabled: values.overlay.enabled,
     },
     detection: {
-      person: {
-        enabled: values.detection.person.enabled,
-        threshold: values.detection.person.threshold,
-        ...(values.detection.person.processing_size
-          ? { processing_size: { ...values.detection.person.processing_size } }
-          : {}),
+      object: {
+        enabled: values.detection.object.enabled,
+        threshold: values.detection.object.threshold,
+        processing_size: { ...values.detection.object.processing_size },
+        model: { ...values.detection.object.model },
       },
       face: {
         enabled: values.detection.face.enabled,
@@ -160,7 +159,7 @@ const delay = (milliseconds: number, signal: AbortSignal) =>
   });
 
 const TPU_FEATURE_IDS: TpuFeatureId[] = [
-  "person",
+  "object",
   "face",
   "human_pose",
   "object_tracking",
@@ -172,14 +171,49 @@ const isTpuFeatureId = (value: string): value is TpuFeatureId =>
 const featureProcessingSize = (feature: AiFeatureCapability) =>
   feature.processing_size ?? feature.processingSize;
 
+const processingSizeConstraints = (
+  capability: ProcessingSizeCapability,
+) => {
+  if (capability.constraints) return capability.constraints;
+  if (
+    Number.isFinite(capability.min_width) &&
+    Number.isFinite(capability.max_width) &&
+    Number.isFinite(capability.min_height) &&
+    Number.isFinite(capability.max_height) &&
+    Number.isFinite(capability.step)
+  ) {
+    return {
+      minWidth: capability.min_width,
+      maxWidth: capability.max_width,
+      minHeight: capability.min_height,
+      maxHeight: capability.max_height,
+      widthStep: capability.step,
+      heightStep: capability.step,
+      presets: capability.default ? [capability.default] : [],
+    };
+  }
+  return undefined;
+};
+
 const validateProcessingSize = (
   field: string,
   value: ProcessingSize | undefined,
   capability: ProcessingSizeCapability | undefined,
   errors: ConfigIssue[],
 ) => {
-  if (!capability || !value || !capability.constraints) return;
-  const { constraints } = capability;
+  if (!capability || !value) return;
+  if (capability.fixed) {
+    if (value.width !== capability.width || value.height !== capability.height) {
+      errors.push({
+        field,
+        code: "INVALID_PROCESSING_SIZE",
+        message: i18n.t("config.validation.invalidProcessingSize"),
+      });
+    }
+    return;
+  }
+  const constraints = processingSizeConstraints(capability);
+  if (!constraints) return;
   if (
     !Number.isFinite(constraints.minWidth) ||
     !Number.isFinite(constraints.maxWidth) ||
@@ -214,7 +248,7 @@ const tpuFeatureEnabled = (
   values: DeviceConfigValues,
   featureId: TpuFeatureId,
 ) => {
-  if (featureId === "person" || featureId === "face") {
+  if (featureId === "object" || featureId === "face") {
     return values.detection[featureId].enabled;
   }
   return values.detection[featureId]?.enabled === true;
@@ -295,7 +329,7 @@ function validateDraftLocally(
 
   const thresholdFields: Array<[string, number | undefined]> = [];
   (capabilities.ai?.features ?? []).forEach((feature) => {
-    if (feature.id === "person" || feature.id === "face") {
+    if (feature.id === "object" || feature.id === "face") {
       thresholdFields.push([
         `detection.${feature.id}.threshold`,
         values.detection[feature.id].threshold,
@@ -322,10 +356,10 @@ function validateDraftLocally(
     }
   });
   (capabilities.ai?.features ?? []).forEach((feature) => {
-    if (feature.id === "person") {
+    if (feature.id === "object") {
       validateProcessingSize(
-        "detection.person.processing_size",
-        values.detection.person.processing_size,
+        "detection.object.processing_size",
+        values.detection.object.processing_size,
         featureProcessingSize(feature),
         errors,
       );
@@ -358,11 +392,16 @@ function validateDraftLocally(
       );
     }
   });
+  const motionFeature = capabilities.ai?.features.find(
+    (feature) => feature.id === "motion",
+  );
   const motionCapability = capabilities.ai?.motion_detection;
   validateProcessingSize(
     "detection.motion.processing_size",
     values.detection.motion.processing_size,
-    typeof motionCapability === "object"
+    motionFeature
+      ? featureProcessingSize(motionFeature)
+      : typeof motionCapability === "object"
       ? motionCapability.processing_size ?? motionCapability.processingSize
       : capabilities.ai?.motion_processing_size ??
           capabilities.ai?.motionProcessingSize,

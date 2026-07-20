@@ -26,6 +26,7 @@ export interface ModelSizeConstraints {
   maxHeight?: number;
   widthStep?: number;
   heightStep?: number;
+  step?: number;
   presets?: ModelSize[];
 }
 
@@ -79,6 +80,10 @@ export interface RuntimeJsonSchema {
   uniqueItems?: boolean;
   pattern?: string;
   step?: number;
+  minWidth?: number;
+  maxWidth?: number;
+  minHeight?: number;
+  maxHeight?: number;
   description?: string;
   constraints?: ModelSizeConstraints;
   presets?: ModelSize[];

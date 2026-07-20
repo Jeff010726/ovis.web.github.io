@@ -170,7 +170,7 @@ export interface paths {
         put?: never;
         /**
          * 启用可部署模型并创建配置任务
-         * @description 空请求体时使用已保存 deployment 参数。也可提供一次性 threshold 覆盖；覆盖值只用于
+         * @description 空请求体时使用已保存 deployment 参数。也可提供一次性阈值和处理尺寸覆盖；覆盖值只用于
          *     本次启用，不修改已保存参数。检测模型启用时会关闭冲突的人脸、人体姿态和目标跟踪任务。
          */
         post: operations["activateModel"];
@@ -268,7 +268,7 @@ export interface components {
             /** @enum {integer} */
             maxFileSize: 16777216;
             /** @description 空数组表示当前固件只能保存该模型，尚无运行消费者。 */
-            runtimeConsumers: "ipcamera.person_detection"[];
+            runtimeConsumers: "ipcamera.object_detection"[];
             /** @description JSON Schema 子集；前端以它决定该导入器的独立表单字段。 */
             metadataSchema: {
                 [key: string]: unknown;
@@ -373,6 +373,13 @@ export interface components {
         DetectionDeploymentParameters: {
             /** @default 0.5 */
             threshold: number;
+            processingSize: components["schemas"]["ProcessingSize"];
+        };
+        ProcessingSize: {
+            /** @default 448 */
+            width: number;
+            /** @default 256 */
+            height: number;
         };
         DeploymentState: {
             modelId: components["schemas"]["ModelId"];
@@ -480,15 +487,6 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description 缺少或无效的管理员 Basic Authentication */
-        Unauthorized: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                "application/json": components["schemas"]["Error"];
-            };
-        };
         /** @description 缺少 X-OVIS-CSRF 或 Origin 不允许 */
         Forbidden: {
             headers: {
@@ -574,7 +572,7 @@ export interface operations {
                      *           "deployable": true,
                      *           "maxFileSize": 16777216,
                      *           "runtimeConsumers": [
-                     *             "ipcamera.person_detection"
+                     *             "ipcamera.object_detection"
                      *           ],
                      *           "metadataSchema": {
                      *             "type": "object",
@@ -604,7 +602,8 @@ export interface operations {
                      *             "type": "object",
                      *             "additionalProperties": false,
                      *             "required": [
-                     *               "threshold"
+                     *               "threshold",
+                     *               "processingSize"
                      *             ],
                      *             "properties": {
                      *               "threshold": {
@@ -613,6 +612,9 @@ export interface operations {
                      *                 "maximum": 1,
                      *                 "default": 0.5,
                      *                 "step": 0.01
+                     *               },
+                     *               "processingSize": {
+                     *                 "$ref": "#/components/schemas/ProcessingSize"
                      *               }
                      *             }
                      *           },
@@ -716,7 +718,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };
     };
@@ -766,7 +767,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
@@ -791,7 +791,6 @@ export interface operations {
                     "application/json": components["schemas"]["ImportTask"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -815,7 +814,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
@@ -843,7 +841,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
@@ -866,7 +863,6 @@ export interface operations {
                     "application/json": components["schemas"]["ModelList"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -890,7 +886,6 @@ export interface operations {
                     "application/json": components["schemas"]["ModelDetail"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -914,7 +909,6 @@ export interface operations {
                 };
                 content?: never;
             };
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
@@ -945,10 +939,18 @@ export interface operations {
                      *       "active": true,
                      *       "referenced": true,
                      *       "parameters": {
-                     *         "threshold": 0.55
+                     *         "threshold": 0.55,
+                     *         "processingSize": {
+                     *           "width": 448,
+                     *           "height": 256
+                     *         }
                      *       },
                      *       "appliedParameters": {
-                     *         "threshold": 0.55
+                     *         "threshold": 0.55,
+                     *         "processingSize": {
+                     *           "width": 448,
+                     *           "height": 256
+                     *         }
                      *       },
                      *       "parameterSchema": {
                      *         "threshold": {
@@ -964,7 +966,6 @@ export interface operations {
                     "application/json": components["schemas"]["DeploymentState"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             /** @description 该模型类型当前不可部署 */
             409: {
@@ -992,7 +993,11 @@ export interface operations {
             content: {
                 /**
                  * @example {
-                 *       "threshold": 0.55
+                 *       "threshold": 0.55,
+                 *       "processingSize": {
+                 *         "width": 448,
+                 *         "height": 256
+                 *       }
                  *     }
                  */
                 "application/json": components["schemas"]["DetectionDeploymentParameters"];
@@ -1009,7 +1014,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
@@ -1042,7 +1046,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
@@ -1070,7 +1073,6 @@ export interface operations {
                     "application/json": components["schemas"]["AcceptedTask"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];

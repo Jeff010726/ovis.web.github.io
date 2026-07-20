@@ -93,21 +93,16 @@ const secondDeviceInfo = {
 };
 
 const processingCapability = (width: number, height: number) => ({
-  width,
-  height,
-  constraints: {
-    minWidth: 160,
-    maxWidth: 1920,
-    minHeight: 128,
-    maxHeight: 1080,
-    widthStep: 2,
-    heightStep: 2,
-    presets: [{ width, height }, { width: 640, height: 384 }],
-  },
+  min_width: 160,
+  max_width: width,
+  min_height: 96,
+  max_height: height,
+  step: 2,
+  default: { width, height },
 });
 
 const configCapabilities = {
-  schema_version: 3,
+  schema_version: 4,
   outputs: {
     rtsp: { supported: true },
     uvc: { supported: true },
@@ -148,29 +143,34 @@ const configCapabilities = {
   },
   features: {
     osd: true,
+    object_detection: true,
+    face_detection: true,
+    motion_detection: true,
+    human_pose: true,
+    object_tracking: true,
   },
   ai: {
     max_active_tpu_features: 1,
     features: [
       {
-        id: "person",
-        name: "人员检测",
-        model: "YOLOv8n Monitor Person",
+        id: "object",
+        name: "目标检测",
+        model_selectable: true,
         processing_size: processingCapability(448, 256),
       },
       { id: "face", name: "人脸检测", model: "SCRFD", processing_size: processingCapability(768, 432) },
+      { id: "motion", name: "移动检测", processing_size: processingCapability(640, 360) },
       { id: "human_pose", name: "人体姿态", model: "YOLOv8 Pose", processing_size: processingCapability(640, 384) },
       {
         id: "object_tracking",
         name: "目标检测与跟踪",
         model: "YOLOv8n + FearTrack",
         search_methods: ["color", "fastsam"],
-        detection_processing_size: processingCapability(640, 384),
-        tracking_processing_size: processingCapability(1920, 1080),
+        detection_processing_size: { fixed: true, width: 640, height: 384 },
+        tracking_processing_size: { fixed: true, width: 1920, height: 1080 },
       },
     ],
     motion_detection: true,
-    motion_processing_size: processingCapability(640, 360),
   },
 };
 
@@ -192,7 +192,16 @@ const currentConfig = {
     },
     overlay: { enabled: true },
     detection: {
-      person: { enabled: true, threshold: 0.7, processing_size: { width: 448, height: 256 } },
+      object: {
+        enabled: true,
+        threshold: 0.7,
+        processing_size: { width: 448, height: 256 },
+        model: {
+          source: "builtin",
+          id: "builtin.object_detection",
+          runtime_model: "YOLOV8_DETECTION",
+        },
+      },
       face: { enabled: false, threshold: 0.5, processing_size: { width: 768, height: 432 } },
       human_pose: { enabled: false, threshold: 0.65, processing_size: { width: 640, height: 384 } },
       object_tracking: {
@@ -229,7 +238,7 @@ const modelImporterCatalog = {
       enabled: true,
       deployable: true,
       maxFileSize: 16_777_216,
-      runtimeConsumers: ["ipcamera.person_detection"],
+      runtimeConsumers: ["ipcamera.object_detection"],
       metadataSchema: {
         type: "object",
         additionalProperties: false,
@@ -1535,11 +1544,11 @@ test("keeps AI configuration usable when processing-size constraints are absent"
   page,
 }) => {
   const capabilitiesWithoutConstraints = structuredClone(configCapabilities);
-  const personCapability = capabilitiesWithoutConstraints.ai.features.find(
-    (feature) => feature.id === "person",
+  const objectCapability = capabilitiesWithoutConstraints.ai.features.find(
+    (feature) => feature.id === "object",
   );
-  if (personCapability) {
-    personCapability.processing_size = { width: 448, height: 256 } as typeof personCapability.processing_size;
+  if (objectCapability) {
+    objectCapability.processing_size = { default: { width: 448, height: 256 } } as typeof objectCapability.processing_size;
   }
   await page.route("**/api/v1/config/capabilities", (route) =>
     fulfillJson(route, capabilitiesWithoutConstraints),
@@ -1921,6 +1930,18 @@ test("edits, validates, saves, applies, and polls configuration", async ({
       outputs: {
         rtsp: { enabled: false },
         uvc: { enabled: false },
+      },
+      detection: {
+        object: {
+          enabled: true,
+          threshold: 0.7,
+          processing_size: { width: 448, height: 256 },
+          model: {
+            source: "builtin",
+            id: "builtin.object_detection",
+            runtime_model: "YOLOV8_DETECTION",
+          },
+        },
       },
     },
   });
