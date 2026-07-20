@@ -19,17 +19,50 @@ export type TpuFeatureId =
 
 export type ObjectTrackingSearchMethod = "color" | "fastsam";
 
+export interface ProcessingSize {
+  width: number;
+  height: number;
+}
+
+export interface ProcessingSizeConstraints {
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight: number;
+  widthStep: number;
+  heightStep: number;
+  presets: ProcessingSize[];
+}
+
+export interface ProcessingSizeCapability extends ProcessingSize {
+  constraints: ProcessingSizeConstraints;
+}
+
 export interface AiFeatureCapability {
   id: string;
   name: string;
   model: string;
   search_methods?: ObjectTrackingSearchMethod[];
+  processing_size?: ProcessingSizeCapability;
+  processingSize?: ProcessingSizeCapability;
+  detection_processing_size?: ProcessingSizeCapability;
+  detectionProcessingSize?: ProcessingSizeCapability;
+  tracking_processing_size?: ProcessingSizeCapability;
+  trackingProcessingSize?: ProcessingSizeCapability;
 }
 
 export interface AiCapabilities {
   max_active_tpu_features: number;
   features: AiFeatureCapability[];
-  motion_detection: boolean;
+  motion_detection:
+    | boolean
+    | {
+        supported: boolean;
+        processing_size?: ProcessingSizeCapability;
+        processingSize?: ProcessingSizeCapability;
+      };
+  motion_processing_size?: ProcessingSizeCapability;
+  motionProcessingSize?: ProcessingSizeCapability;
 }
 
 export interface OutputCapabilities {
@@ -83,24 +116,34 @@ export interface DeviceConfigValues {
     person: {
       enabled: boolean;
       threshold: number;
+      processing_size?: ProcessingSize;
+      model_id?: string | null;
+      model_name?: string;
+      model_source?: "builtin" | "custom";
+      runtime_status?: string;
     };
     face: {
       enabled: boolean;
       threshold: number;
+      processing_size?: ProcessingSize;
     };
     human_pose?: {
       enabled: boolean;
       threshold: number;
+      processing_size?: ProcessingSize;
     };
     object_tracking?: {
       enabled: boolean;
       search_method: ObjectTrackingSearchMethod;
       use_kalman: boolean;
       score_threshold: number;
+      detection_processing_size?: ProcessingSize;
+      tracking_processing_size?: ProcessingSize;
     };
     motion: {
       enabled: boolean;
       sensitivity: number;
+      processing_size?: ProcessingSize;
     };
   };
 }

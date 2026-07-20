@@ -52,8 +52,20 @@ async function requestConfigApi<T>(
       requestOptions,
     );
     if (!response.ok) {
+      let message: string = i18n.t("config.validation.httpError", {
+        status: response.status,
+      });
+      try {
+        const body = (await response.json()) as {
+          error?: string;
+          message?: string;
+        };
+        message = body.message ?? body.error ?? message;
+      } catch {
+        // Keep the HTTP status message when the device did not return JSON.
+      }
       throw new ConfigRequestError(
-        i18n.t("config.validation.httpError", { status: response.status }),
+        message,
         response.status,
       );
     }

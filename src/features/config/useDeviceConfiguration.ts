@@ -23,6 +23,7 @@ import {
 } from "./config.session";
 import type { PendingConfigApplication } from "./config.session";
 import type {
+  AiFeatureCapability,
   ConfigApplicationState,
   ConfigApplicationConfirmation,
   ConfigCapabilities,
@@ -34,6 +35,8 @@ import type {
   ConfigurationStatus,
   DeviceConfigDocument,
   DeviceConfigValues,
+  ProcessingSize,
+  ProcessingSizeCapability,
   TpuFeatureId,
 } from "./config.types";
 
@@ -66,14 +69,23 @@ const serializeConfigValues = (
       person: {
         enabled: values.detection.person.enabled,
         threshold: values.detection.person.threshold,
+        ...(values.detection.person.processing_size
+          ? { processing_size: { ...values.detection.person.processing_size } }
+          : {}),
       },
       face: {
         enabled: values.detection.face.enabled,
         threshold: values.detection.face.threshold,
+        ...(values.detection.face.processing_size
+          ? { processing_size: { ...values.detection.face.processing_size } }
+          : {}),
       },
       motion: {
         enabled: values.detection.motion.enabled,
         sensitivity: values.detection.motion.sensitivity,
+        ...(values.detection.motion.processing_size
+          ? { processing_size: { ...values.detection.motion.processing_size } }
+          : {}),
       },
     },
   };
@@ -93,6 +105,9 @@ const serializeConfigValues = (
     serialized.detection.human_pose = {
       enabled: values.detection.human_pose.enabled,
       threshold: values.detection.human_pose.threshold,
+      ...(values.detection.human_pose.processing_size
+        ? { processing_size: { ...values.detection.human_pose.processing_size } }
+        : {}),
     };
   }
   if (values.detection.object_tracking) {
@@ -101,6 +116,20 @@ const serializeConfigValues = (
       search_method: values.detection.object_tracking.search_method,
       use_kalman: values.detection.object_tracking.use_kalman,
       score_threshold: values.detection.object_tracking.score_threshold,
+      ...(values.detection.object_tracking.detection_processing_size
+        ? {
+            detection_processing_size: {
+              ...values.detection.object_tracking.detection_processing_size,
+            },
+          }
+        : {}),
+      ...(values.detection.object_tracking.tracking_processing_size
+        ? {
+            tracking_processing_size: {
+              ...values.detection.object_tracking.tracking_processing_size,
+            },
+          }
+        : {}),
     };
   }
 
@@ -139,6 +168,35 @@ const TPU_FEATURE_IDS: TpuFeatureId[] = [
 
 const isTpuFeatureId = (value: string): value is TpuFeatureId =>
   TPU_FEATURE_IDS.includes(value as TpuFeatureId);
+
+const featureProcessingSize = (feature: AiFeatureCapability) =>
+  feature.processing_size ?? feature.processingSize;
+
+const validateProcessingSize = (
+  field: string,
+  value: ProcessingSize | undefined,
+  capability: ProcessingSizeCapability | undefined,
+  errors: ConfigIssue[],
+) => {
+  if (!capability || !value) return;
+  const { constraints } = capability;
+  const valid =
+    Number.isInteger(value.width) &&
+    Number.isInteger(value.height) &&
+    value.width >= constraints.minWidth &&
+    value.width <= constraints.maxWidth &&
+    value.height >= constraints.minHeight &&
+    value.height <= constraints.maxHeight &&
+    (value.width - constraints.minWidth) % constraints.widthStep === 0 &&
+    (value.height - constraints.minHeight) % constraints.heightStep === 0;
+  if (!valid) {
+    errors.push({
+      field,
+      code: "INVALID_PROCESSING_SIZE",
+      message: i18n.t("config.validation.invalidProcessingSize"),
+    });
+  }
+};
 
 const tpuFeatureEnabled = (
   values: DeviceConfigValues,
@@ -251,8 +309,60 @@ function validateDraftLocally(
       });
     }
   });
+  (capabilities.ai?.features ?? []).forEach((feature) => {
+    if (feature.id === "person") {
+      validateProcessingSize(
+        "detection.person.processing_size",
+        values.detection.person.processing_size,
+        featureProcessingSize(feature),
+        errors,
+      );
+    } else if (feature.id === "face") {
+      validateProcessingSize(
+        "detection.face.processing_size",
+        values.detection.face.processing_size,
+        featureProcessingSize(feature),
+        errors,
+      );
+    } else if (feature.id === "human_pose") {
+      validateProcessingSize(
+        "detection.human_pose.processing_size",
+        values.detection.human_pose?.processing_size,
+        featureProcessingSize(feature),
+        errors,
+      );
+    } else if (feature.id === "object_tracking") {
+      validateProcessingSize(
+        "detection.object_tracking.detection_processing_size",
+        values.detection.object_tracking?.detection_processing_size,
+        feature.detection_processing_size ?? feature.detectionProcessingSize,
+        errors,
+      );
+      validateProcessingSize(
+        "detection.object_tracking.tracking_processing_size",
+        values.detection.object_tracking?.tracking_processing_size,
+        feature.tracking_processing_size ?? feature.trackingProcessingSize,
+        errors,
+      );
+    }
+  });
+  const motionCapability = capabilities.ai?.motion_detection;
+  validateProcessingSize(
+    "detection.motion.processing_size",
+    values.detection.motion.processing_size,
+    typeof motionCapability === "object"
+      ? motionCapability.processing_size ?? motionCapability.processingSize
+      : capabilities.ai?.motion_processing_size ??
+          capabilities.ai?.motionProcessingSize,
+    errors,
+  );
+  const motionDetection = capabilities.ai?.motion_detection;
+  const motionSupported =
+    typeof motionDetection === "object"
+      ? motionDetection.supported
+      : motionDetection === true;
   if (
-    capabilities.ai?.motion_detection &&
+    motionSupported &&
     (!Number.isFinite(values.detection.motion.sensitivity) ||
       (values.detection.motion.sensitivity < 0 ||
         values.detection.motion.sensitivity > 100))

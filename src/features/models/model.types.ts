@@ -9,18 +9,57 @@ export type ModelTaskType = ModelImporter["task"];
 export type CreateImportRequest = Schemas["CreateImportRequest"];
 export type ImportMetadata = Schemas["ImportMetadata"];
 export type ImportTask = Schemas["ImportTask"];
-export type ModelList = Schemas["ModelList"];
-export type ModelSummary = Schemas["ModelSummary"];
-export type ModelDetail = Schemas["ModelDetail"];
-export type DeploymentState = Schemas["DeploymentState"];
-export type DeploymentParameters = Schemas["DetectionDeploymentParameters"];
+type GeneratedModelList = Schemas["ModelList"];
+type GeneratedModelSummary = Schemas["ModelSummary"];
+type GeneratedModelDetail = Schemas["ModelDetail"];
+type GeneratedDeploymentState = Schemas["DeploymentState"];
+
+export interface ModelSize {
+  width: number;
+  height: number;
+}
+
+export interface ModelSizeConstraints {
+  minWidth: number;
+  maxWidth: number;
+  minHeight: number;
+  maxHeight: number;
+  widthStep: number;
+  heightStep: number;
+  presets: ModelSize[];
+}
+
+export interface DeploymentParameters {
+  threshold: number;
+  processingSize?: ModelSize;
+}
+
+export type ModelSummary = GeneratedModelSummary & {
+  tensorSize?: ModelSize | null;
+  deployment?: DeploymentParameters | null;
+  processingSize?: ModelSize | null;
+  threshold?: number | null;
+};
+
+export type ModelDetail = Omit<GeneratedModelDetail, "deployment"> & {
+  tensorSize?: ModelSize | null;
+  deployment?: DeploymentParameters | null;
+};
+
+export type ModelList = Omit<GeneratedModelList, "models"> & {
+  models: ModelSummary[];
+};
+
+export type DeploymentState = Omit<
+  GeneratedDeploymentState,
+  "parameters" | "appliedParameters"
+> & {
+  parameters: DeploymentParameters;
+  appliedParameters: DeploymentParameters | null;
+  processingSizeConstraints?: ModelSizeConstraints;
+};
 export type AcceptedTask = Schemas["AcceptedTask"];
 export type ModelTask = Schemas["Task"];
-
-export interface ModelAdminCredentials {
-  username: string;
-  password: string;
-}
 
 export interface RuntimeJsonSchema {
   type?: string;
@@ -41,6 +80,8 @@ export interface RuntimeJsonSchema {
   pattern?: string;
   step?: number;
   description?: string;
+  constraints?: ModelSizeConstraints;
+  presets?: ModelSize[];
 }
 
 export interface ImportFormSubmission {

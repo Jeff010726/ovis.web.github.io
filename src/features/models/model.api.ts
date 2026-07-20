@@ -5,7 +5,6 @@ import type {
   DeploymentState,
   ImportTask,
   ImporterCatalog,
-  ModelAdminCredentials,
   ModelDetail,
   ModelList,
   ModelTask,
@@ -25,18 +24,8 @@ export class ModelApiError extends Error {
   }
 }
 
-const basicAuthorization = ({ username, password }: ModelAdminCredentials) => {
-  const bytes = new TextEncoder().encode(`${username}:${password}`);
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return `Basic ${window.btoa(binary)}`;
-};
-
 interface RequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
-  credentials?: ModelAdminCredentials;
   body?: unknown;
   csrf?: boolean;
   signal?: AbortSignal;
@@ -53,9 +42,6 @@ async function requestModelApi<T>(
   options.signal?.addEventListener("abort", abortFromParent, { once: true });
 
   const headers: Record<string, string> = {};
-  if (options.credentials) {
-    headers.Authorization = basicAuthorization(options.credentials);
-  }
   if (options.csrf) headers["X-OVIS-CSRF"] = "1";
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -71,8 +57,12 @@ async function requestModelApi<T>(
     if (!response.ok) {
       let message = `Model API returned HTTP ${response.status}`;
       try {
-        const body = (await response.json()) as { error?: string };
-        if (body.error) message = body.error;
+        const body = (await response.json()) as {
+          error?: string;
+          message?: string;
+          validationError?: string;
+        };
+        message = body.validationError ?? body.message ?? body.error ?? message;
       } catch {
         // Keep the status-based message when the error body is unavailable.
       }
@@ -99,13 +89,11 @@ export const getModelImporters = (apiBaseUrl: string, signal?: AbortSignal) =>
 
 export const createModelImport = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   request: CreateImportRequest,
   signal?: AbortSignal,
 ) =>
   requestModelApi<ImportTask>(apiBaseUrl, "/models/imports", {
     method: "POST",
-    credentials,
     csrf: true,
     body: request,
     signal,
@@ -113,31 +101,26 @@ export const createModelImport = (
 
 export const getModelImport = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   importId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<ImportTask>(apiBaseUrl, `/models/imports/${importId}`, {
-    credentials,
     signal,
   });
 
 export const cancelModelImport = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   importId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<void>(apiBaseUrl, `/models/imports/${importId}`, {
     method: "DELETE",
-    credentials,
     csrf: true,
     signal,
   });
 
 export function uploadModelContent(
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   importId: string,
   file: Blob,
   onProgress: (progress: UploadProgress) => void,
@@ -148,7 +131,6 @@ export function uploadModelContent(
       "PUT",
       `${apiBaseUrl.replace(/\/$/, "")}/models/imports/${importId}/content`,
     );
-    xhr.setRequestHeader("Authorization", basicAuthorization(credentials));
     xhr.setRequestHeader("X-OVIS-CSRF", "1");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.upload.onprogress = (event) => {
@@ -165,8 +147,12 @@ export function uploadModelContent(
       if (xhr.status < 200 || xhr.status >= 300) {
         let message = `Model upload returned HTTP ${xhr.status}`;
         try {
-          const body = JSON.parse(xhr.responseText) as { error?: string };
-          if (body.error) message = body.error;
+          const body = JSON.parse(xhr.responseText) as {
+            error?: string;
+            message?: string;
+            validationError?: string;
+          };
+          message = body.validationError ?? body.message ?? body.error ?? message;
         } catch {
           // Keep the status-based message.
         }
@@ -186,68 +172,57 @@ export function uploadModelContent(
 
 export const commitModelImport = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   importId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<ModelDetail>(apiBaseUrl, `/models/imports/${importId}/commit`, {
     method: "POST",
-    credentials,
     csrf: true,
     signal,
   });
 
 export const listModels = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   signal?: AbortSignal,
-) => requestModelApi<ModelList>(apiBaseUrl, "/models", { credentials, signal });
+) => requestModelApi<ModelList>(apiBaseUrl, "/models", { signal });
 
 export const getModel = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<ModelDetail>(apiBaseUrl, `/models/${modelId}`, {
-    credentials,
     signal,
   });
 
 export const deleteModel = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<void>(apiBaseUrl, `/models/${modelId}`, {
     method: "DELETE",
-    credentials,
     csrf: true,
     signal,
   });
 
 export const getModelDeployment = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<DeploymentState>(apiBaseUrl, `/models/${modelId}/deployment`, {
-    credentials,
     signal,
   });
 
 export const updateModelDeployment = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   parameters: DeploymentParameters,
   signal?: AbortSignal,
 ) =>
   requestModelApi<DeploymentState>(apiBaseUrl, `/models/${modelId}/deployment`, {
     method: "PUT",
-    credentials,
     csrf: true,
     body: parameters,
     signal,
@@ -255,26 +230,22 @@ export const updateModelDeployment = (
 
 export const activateModel = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<AcceptedTask>(apiBaseUrl, `/models/${modelId}/activate`, {
     method: "POST",
-    credentials,
     csrf: true,
     signal,
   });
 
 export const deactivateModel = (
   apiBaseUrl: string,
-  credentials: ModelAdminCredentials,
   modelId: string,
   signal?: AbortSignal,
 ) =>
   requestModelApi<AcceptedTask>(apiBaseUrl, `/models/${modelId}/deactivate`, {
     method: "POST",
-    credentials,
     csrf: true,
     signal,
   });
@@ -284,4 +255,3 @@ export const getModelTask = (
   taskId: number,
   signal?: AbortSignal,
 ) => requestModelApi<ModelTask>(apiBaseUrl, `/tasks/${taskId}`, { signal });
-

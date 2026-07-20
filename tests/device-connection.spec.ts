@@ -92,6 +92,20 @@ const secondDeviceInfo = {
   serial: "OVIS-1842-00987654",
 };
 
+const processingCapability = (width: number, height: number) => ({
+  width,
+  height,
+  constraints: {
+    minWidth: 160,
+    maxWidth: 1920,
+    minHeight: 128,
+    maxHeight: 1080,
+    widthStep: 2,
+    heightStep: 2,
+    presets: [{ width, height }, { width: 640, height: 384 }],
+  },
+});
+
 const configCapabilities = {
   schema_version: 3,
   outputs: {
@@ -142,17 +156,21 @@ const configCapabilities = {
         id: "person",
         name: "人员检测",
         model: "YOLOv8n Monitor Person",
+        processing_size: processingCapability(448, 256),
       },
-      { id: "face", name: "人脸检测", model: "SCRFD" },
-      { id: "human_pose", name: "人体姿态", model: "YOLOv8 Pose" },
+      { id: "face", name: "人脸检测", model: "SCRFD", processing_size: processingCapability(768, 432) },
+      { id: "human_pose", name: "人体姿态", model: "YOLOv8 Pose", processing_size: processingCapability(640, 384) },
       {
         id: "object_tracking",
         name: "目标检测与跟踪",
         model: "YOLOv8n + FearTrack",
         search_methods: ["color", "fastsam"],
+        detection_processing_size: processingCapability(640, 384),
+        tracking_processing_size: processingCapability(1920, 1080),
       },
     ],
     motion_detection: true,
+    motion_processing_size: processingCapability(640, 360),
   },
 };
 
@@ -174,16 +192,18 @@ const currentConfig = {
     },
     overlay: { enabled: true },
     detection: {
-      person: { enabled: true, threshold: 0.7 },
-      face: { enabled: false, threshold: 0.5 },
-      human_pose: { enabled: false, threshold: 0.65 },
+      person: { enabled: true, threshold: 0.7, processing_size: { width: 448, height: 256 } },
+      face: { enabled: false, threshold: 0.5, processing_size: { width: 768, height: 432 } },
+      human_pose: { enabled: false, threshold: 0.65, processing_size: { width: 640, height: 384 } },
       object_tracking: {
         enabled: false,
         search_method: "color",
         use_kalman: true,
         score_threshold: 0.5,
+        detection_processing_size: { width: 640, height: 384 },
+        tracking_processing_size: { width: 1920, height: 1080 },
       },
-      motion: { enabled: false, sensitivity: 50 },
+      motion: { enabled: false, sensitivity: 50, processing_size: { width: 640, height: 360 } },
     },
   },
 };
@@ -464,6 +484,16 @@ async function discoverSingleDevice(
 async function mockConfigurationRead(page: Page) {
   await page.route("**/api/v1/models/importers", (route) =>
     fulfillJson(route, modelImporterCatalog),
+  );
+  await page.route("**/api/v1/models", (route) =>
+    fulfillJson(route, {
+      models: [],
+      storage: {
+        totalBytes: 67_108_864,
+        availableBytes: 52_428_800,
+        reservedBytes: 2_097_152,
+      },
+    }),
   );
   await page.route("**/api/v1/config/capabilities", (route) =>
     fulfillJson(route, configCapabilities),
@@ -1264,14 +1294,13 @@ test("selects, confirms, connects, and disconnects locally", async ({ page }) =>
   await expect(page.getByText("搜索完成")).toBeVisible();
 });
 
-test("imports a model with authenticated full-file upload and CSRF writes", async ({
+test("imports a model with same-origin full-file upload and CSRF writes", async ({
   page,
 }) => {
   await mockConfigurationRead(page);
   const importId = "018f1234abcd5678";
   const file = Buffer.from("BMOVIS\u0000test-model");
   const createdAt = 1_784_505_600;
-  const expectedAuthorization = "Basic YWRtaW46c2VjcmV0";
   const emptyModelList = {
     models: [],
     storage: {
@@ -1306,19 +1335,23 @@ test("imports a model with authenticated full-file upload and CSRF writes", asyn
     modelType: "YOLOV8",
     task: "object_detection",
     deployable: true,
-    deployment: { threshold: 0.5 },
+    tensorSize: { width: 640, height: 384 },
+    deployment: {
+      threshold: 0.5,
+      processingSize: { width: 448, height: 256 },
+    },
     active: false,
     referenced: false,
   };
 
   await page.route("**/api/v1/models", async (route) => {
-    expect(route.request().headers().authorization).toBe(expectedAuthorization);
+    expect(route.request().headers().authorization).toBeUndefined();
     return fulfillJson(route, emptyModelList);
   });
   await page.route("**/api/v1/models/imports", async (route) => {
     const request = route.request();
     expect(request.method()).toBe("POST");
-    expect(request.headers().authorization).toBe(expectedAuthorization);
+    expect(request.headers().authorization).toBeUndefined();
     expect(request.headers()["x-ovis-csrf"]).toBe("1");
     expect(request.postDataJSON()).toEqual({
       importerId: "detection.yolov8",
@@ -1332,7 +1365,7 @@ test("imports a model with authenticated full-file upload and CSRF writes", asyn
   await page.route(`**/api/v1/models/imports/${importId}/content`, async (route) => {
     const request = route.request();
     expect(request.method()).toBe("PUT");
-    expect(request.headers().authorization).toBe(expectedAuthorization);
+    expect(request.headers().authorization).toBeUndefined();
     expect(request.headers()["x-ovis-csrf"]).toBe("1");
     expect(request.headers()["content-type"]).toBe("application/octet-stream");
     expect(request.headers()["content-range"]).toBeUndefined();
@@ -1346,7 +1379,7 @@ test("imports a model with authenticated full-file upload and CSRF writes", asyn
   });
   await page.route(`**/api/v1/models/imports/${importId}/commit`, async (route) => {
     expect(route.request().method()).toBe("POST");
-    expect(route.request().headers().authorization).toBe(expectedAuthorization);
+    expect(route.request().headers().authorization).toBeUndefined();
     expect(route.request().headers()["x-ovis-csrf"]).toBe("1");
     return fulfillJson(route, modelDetail);
   });
@@ -1355,9 +1388,8 @@ test("imports a model with authenticated full-file upload and CSRF writes", asyn
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: /模型管理/ }).click();
-  await page.getByLabel("用户名").fill("admin");
-  await page.getByLabel("密码").fill("secret");
-  await page.getByRole("button", { name: "进入模型管理" }).click();
+  await expect(page.getByLabel("用户名")).toHaveCount(0);
+  await expect(page.getByLabel("密码")).toHaveCount(0);
   await page.getByRole("button", { name: "新增模型" }).click();
   await page.getByRole("button", { name: /目标检测/ }).click();
   await page.getByRole("button", { name: /YOLOv8 目标检测/ }).click();
@@ -1374,10 +1406,58 @@ test("imports a model with authenticated full-file upload and CSRF writes", asyn
 
   await expect(page.getByRole("heading", { name: "安全帽检测" })).toBeVisible();
   await expect(page.getByText("detection.yolov8").last()).toBeVisible();
+  await expect(page.getByText("640 × 384", { exact: true })).toBeVisible();
+  await expect(page.getByText("448 × 256", { exact: true })).toBeVisible();
   const storedImportIds = await page.evaluate((key) => localStorage.getItem(key),
     `ovis_model_import_ids:${deviceInfo.device_id}`,
   );
   expect(storedImportIds).toBeNull();
+});
+
+test("shows an active custom detector as the single object detection pipeline", async ({
+  page,
+}) => {
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/models", (route) =>
+    fulfillJson(route, {
+      models: [
+        {
+          id: "018f1234abcd5678",
+          status: "ready",
+          importerId: "detection.yolov8",
+          schemaVersion: 1,
+          name: "安全帽检测",
+          fileSize: 3_145_728,
+          createdAt: 1_784_505_600,
+          committedAt: 1_784_505_605,
+          modelType: "YOLOV8",
+          task: "object_detection",
+          deployable: true,
+          metadataSummary: { labelsCount: 2 },
+          active: true,
+          referenced: true,
+          tensorSize: { width: 640, height: 384 },
+          deployment: {
+            threshold: 0.3,
+            processingSize: { width: 448, height: 256 },
+          },
+        },
+      ],
+      storage: {
+        totalBytes: 67_108_864,
+        availableBytes: 52_428_800,
+        reservedBytes: 2_097_152,
+      },
+    }),
+  );
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByText("当前模型: 安全帽检测")).toBeVisible();
+  await expect(page.getByText("来源: 自定义")).toBeVisible();
+  await expect(page.getByRole("switch", { name: "启用目标检测" })).toBeChecked();
+  await expect(page.getByText("人员检测", { exact: true })).toHaveCount(0);
 });
 
 test("probes the last successful device address first on the next scan", async ({
@@ -1414,22 +1494,28 @@ test("renders AI capabilities and keeps TPU features mutually exclusive", async 
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
-  const person = page.getByRole("switch", { name: "启用人员检测" });
+  const person = page.getByRole("switch", { name: "启用目标检测" });
   const face = page.getByRole("switch", { name: "启用人脸检测" });
   const pose = page.getByRole("switch", { name: "启用人体姿态检测" });
   const tracking = page.getByRole("switch", { name: "启用目标检测与跟踪" });
   const motion = page.getByRole("switch", { name: "启用移动检测" });
 
   await expect(page.getByText("YOLOv8n Monitor Person")).toBeVisible();
+  await expect(page.getByText("当前模型: YOLOv8n Monitor Person")).toBeVisible();
+  await expect(page.getByText("来源: 内置")).toBeVisible();
+  await expect(page.getByLabel("AI 处理分辨率 宽度").first()).toHaveValue("448");
+  await expect(page.getByLabel("AI 处理分辨率 高度").first()).toHaveValue("256");
   await expect(page.getByText("YOLOv8 Pose")).toBeVisible();
   await expect(page.getByText("YOLOv8n + FearTrack")).toBeVisible();
   await expect(person).toBeChecked();
 
+  page.once("dialog", (dialog) => dialog.accept());
   await pose.click();
   await expect(pose).toBeChecked();
   await expect(person).not.toBeChecked();
   await expect(face).not.toBeChecked();
 
+  page.once("dialog", (dialog) => dialog.accept());
   await tracking.click();
   await expect(tracking).toBeChecked();
   await expect(pose).not.toBeChecked();
@@ -1511,7 +1597,7 @@ test("hides AI controls omitted by device capabilities", async ({ page }) => {
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
   await expect(page.getByRole("switch", { name: "启用人脸检测" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "启用人员检测" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用目标检测" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "启用人体姿态检测" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "启用目标检测与跟踪" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "启用移动检测" })).toHaveCount(0);
@@ -2261,7 +2347,7 @@ test("keeps the configuration workspace usable on mobile", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "设备配置", level: 1 })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "设备配置", level: 3 })).toBeVisible();
   await expect(page.getByRole("region", { name: "主码流" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "启用人员检测" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "启用目标检测" })).toBeVisible();
   const dimensions = await page.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
     contentWidth: document.documentElement.scrollWidth,
@@ -2285,7 +2371,7 @@ test(ENGLISH_MOBILE_CONFIG_TEST_TITLE, async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("region", { name: "Main Stream" })).toBeVisible();
   await expect(
-    page.getByRole("switch", { name: "Enable person detection" }),
+    page.getByRole("switch", { name: "Enable object detection" }),
   ).toBeVisible();
   const dimensions = await page.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,

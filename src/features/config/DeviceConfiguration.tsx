@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -32,12 +32,15 @@ import type {
   ConfigIssue,
   DeviceConfigValues,
   ObjectTrackingSearchMethod,
+  ProcessingSize,
+  ProcessingSizeCapability,
   StreamConfigValues,
   TpuFeatureId,
   VideoProfileCapability,
 } from "./config.types";
 import { useDeviceConfiguration } from "./useDeviceConfiguration";
 import { ModelManager } from "../models/ModelManager";
+import type { ModelSummary } from "../models/model.types";
 
 interface DeviceConfigurationProps {
   device: OvisDeviceInfo;
@@ -233,6 +236,86 @@ function StreamEditor({
   );
 }
 
+interface ProcessingSizeEditorProps {
+  label: string;
+  value: ProcessingSize;
+  capability: ProcessingSizeCapability;
+  disabled: boolean;
+  onChange: (value: ProcessingSize) => void;
+}
+
+function ProcessingSizeEditor({
+  label,
+  value,
+  capability,
+  disabled,
+  onChange,
+}: ProcessingSizeEditorProps) {
+  const { t } = useTranslation();
+  const { constraints } = capability;
+  const presetValue = constraints.presets.some(
+    (preset) => preset.width === value.width && preset.height === value.height,
+  )
+    ? `${value.width}x${value.height}`
+    : "custom";
+  return (
+    <div className="processing-size-editor">
+      <span>{label}</span>
+      <select
+        aria-label={`${label} ${t("config.processingSize.preset")}`}
+        value={presetValue}
+        disabled={disabled}
+        onChange={(event) => {
+          if (event.target.value === "custom") return;
+          const [width, height] = event.target.value.split("x").map(Number);
+          onChange({ width, height });
+        }}
+      >
+        {constraints.presets.map((preset) => (
+          <option
+            key={`${preset.width}x${preset.height}`}
+            value={`${preset.width}x${preset.height}`}
+          >
+            {preset.width} × {preset.height}
+          </option>
+        ))}
+        <option value="custom">{t("config.processingSize.custom")}</option>
+      </select>
+      <label>
+        <span>{t("config.processingSize.width")}</span>
+        <input
+          type="number"
+          aria-label={`${label} ${t("config.processingSize.width")}`}
+          min={constraints.minWidth}
+          max={constraints.maxWidth}
+          step={constraints.widthStep}
+          value={value.width}
+          disabled={disabled}
+          onChange={(event) =>
+            onChange({ ...value, width: Number(event.target.value) })
+          }
+        />
+      </label>
+      <span aria-hidden="true">×</span>
+      <label>
+        <span>{t("config.processingSize.height")}</span>
+        <input
+          type="number"
+          aria-label={`${label} ${t("config.processingSize.height")}`}
+          min={constraints.minHeight}
+          max={constraints.maxHeight}
+          step={constraints.heightStep}
+          value={value.height}
+          disabled={disabled}
+          onChange={(event) =>
+            onChange({ ...value, height: Number(event.target.value) })
+          }
+        />
+      </label>
+    </div>
+  );
+}
+
 interface DetectionRowProps {
   icon: React.ReactNode;
   title: string;
@@ -248,6 +331,9 @@ interface DetectionRowProps {
   rangeLabel: string;
   onToggle: (checked: boolean) => void;
   onValue: (value: number) => void;
+  processingSize?: ProcessingSize;
+  processingCapability?: ProcessingSizeCapability;
+  onProcessingSize?: (value: ProcessingSize) => void;
 }
 
 function DetectionRow({
@@ -265,6 +351,9 @@ function DetectionRow({
   rangeLabel,
   onToggle,
   onValue,
+  processingSize,
+  processingCapability,
+  onProcessingSize,
 }: DetectionRowProps) {
   const { t } = useTranslation();
   return (
@@ -302,6 +391,15 @@ function DetectionRow({
         label={toggleLabel}
         onChange={onToggle}
       />
+      {processingSize && processingCapability && onProcessingSize && (
+        <ProcessingSizeEditor
+          label={t("config.processingSize.ai")}
+          value={processingSize}
+          capability={processingCapability}
+          disabled={!supported || !enabled}
+          onChange={onProcessingSize}
+        />
+      )}
     </div>
   );
 }
@@ -314,6 +412,8 @@ interface ObjectTrackingRowProps {
   onSearchMethod: (method: ObjectTrackingSearchMethod) => void;
   onKalman: (enabled: boolean) => void;
   onScoreThreshold: (value: number) => void;
+  onDetectionProcessingSize: (value: ProcessingSize) => void;
+  onTrackingProcessingSize: (value: ProcessingSize) => void;
 }
 
 function ObjectTrackingRow({
@@ -324,6 +424,8 @@ function ObjectTrackingRow({
   onSearchMethod,
   onKalman,
   onScoreThreshold,
+  onDetectionProcessingSize,
+  onTrackingProcessingSize,
 }: ObjectTrackingRowProps) {
   const { t } = useTranslation();
   const searchMethods = capability.search_methods ?? [];
@@ -387,6 +489,45 @@ function ObjectTrackingRow({
         label={t("config.detection.enableObjectTracking")}
         onChange={onToggle}
       />
+      {(capability.detection_processing_size ??
+        capability.detectionProcessingSize) && (
+        <ProcessingSizeEditor
+          label={t("config.processingSize.trackingDetection")}
+          value={
+            values.detection_processing_size ?? {
+              width: (capability.detection_processing_size ??
+                capability.detectionProcessingSize)!.width,
+              height: (capability.detection_processing_size ??
+                capability.detectionProcessingSize)!.height,
+            }
+          }
+          capability={
+            (capability.detection_processing_size ??
+              capability.detectionProcessingSize)!
+          }
+          disabled={disabled || !values.enabled}
+          onChange={onDetectionProcessingSize}
+        />
+      )}
+      {(capability.tracking_processing_size ?? capability.trackingProcessingSize) && (
+        <ProcessingSizeEditor
+          label={t("config.processingSize.tracking")}
+          value={
+            values.tracking_processing_size ?? {
+              width: (capability.tracking_processing_size ??
+                capability.trackingProcessingSize)!.width,
+              height: (capability.tracking_processing_size ??
+                capability.trackingProcessingSize)!.height,
+            }
+          }
+          capability={
+            (capability.tracking_processing_size ??
+              capability.trackingProcessingSize)!
+          }
+          disabled={disabled || !values.enabled}
+          onChange={onTrackingProcessingSize}
+        />
+      )}
     </div>
   );
 }
@@ -435,6 +576,9 @@ export function DeviceConfiguration({
   const [confirmNetworkReset, setConfirmNetworkReset] = useState(false);
   const [networkResetting, setNetworkResetting] = useState(false);
   const [networkResetError, setNetworkResetError] = useState<string | null>(null);
+  const [activeDetectionModel, setActiveDetectionModel] =
+    useState<ModelSummary | null>(null);
+  const [modelRefreshToken, setModelRefreshToken] = useState(0);
   const [activeSection, setActiveSection] =
     useState<ConfigSectionId>("video");
   const editorRef = useRef<HTMLDivElement>(null);
@@ -456,6 +600,16 @@ export function DeviceConfiguration({
   const rtspEnabled =
     outputCapabilities?.rtsp.supported !== true ||
     outputValues?.rtsp.enabled === true;
+  const motionCapability = configuration.capabilities?.ai?.motion_detection;
+  const motionDetectionSupported =
+    typeof motionCapability === "object"
+      ? motionCapability.supported
+      : motionCapability === true;
+  const motionProcessingCapability =
+    typeof motionCapability === "object"
+      ? motionCapability.processing_size ?? motionCapability.processingSize
+      : configuration.capabilities?.ai?.motion_processing_size ??
+        configuration.capabilities?.ai?.motionProcessingSize;
   const configSections = useMemo<ConfigSection[]>(() => {
     const sectionIds: Array<Pick<ConfigSection, "id" | "labelKey">> = [
       { id: "video", labelKey: "config.sections.video" },
@@ -595,7 +749,47 @@ export function DeviceConfiguration({
     [configuration.capabilities],
   );
 
+  useEffect(() => {
+    if (
+      configuration.applicationState === "success" ||
+      configuration.applicationState === "failed"
+    ) {
+      setModelRefreshToken((value) => value + 1);
+    }
+  }, [configuration.applicationState]);
+
+  const reloadConfiguration = configuration.load;
+  const reloadAfterModelDeployment = useCallback(async () => {
+    await reloadConfiguration();
+  }, [reloadConfiguration]);
+
+  const confirmCustomModelActivation = useCallback(() => {
+    const draft = configuration.draft;
+    const hasConflict =
+      draft?.detection.face.enabled === true ||
+      draft?.detection.human_pose?.enabled === true ||
+      draft?.detection.object_tracking?.enabled === true;
+    return !hasConflict || window.confirm(t("config.detection.conflictConfirm"));
+  }, [configuration.draft, t]);
+
   const setTpuEnabled = (featureId: TpuFeatureId, enabled: boolean) => {
+    const hasConflictingFeature =
+      enabled &&
+      configuration.draft !== null &&
+      TPU_FEATURE_IDS.some((id) => {
+        if (id === featureId) return false;
+        if (id === "person" || id === "face") {
+          return configuration.draft?.detection[id].enabled === true;
+        }
+        return configuration.draft?.detection[id]?.enabled === true;
+      });
+    if (
+      hasConflictingFeature &&
+      configuration.capabilities?.ai?.max_active_tpu_features === 1 &&
+      !window.confirm(t("config.detection.conflictConfirm"))
+    ) {
+      return;
+    }
     configuration.updateDraft((draft) => {
       if (
         enabled &&
@@ -1093,6 +1287,20 @@ export function DeviceConfiguration({
                                   }
                                 })
                               }
+                              onDetectionProcessingSize={(value) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.detection.object_tracking) {
+                                    draft.detection.object_tracking.detection_processing_size = value;
+                                  }
+                                })
+                              }
+                              onTrackingProcessingSize={(value) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.detection.object_tracking) {
+                                    draft.detection.object_tracking.tracking_processing_size = value;
+                                  }
+                                })
+                              }
                             />
                           );
                         }
@@ -1104,7 +1312,7 @@ export function DeviceConfiguration({
                         if (!values) return null;
                         const title =
                           capability.id === "person"
-                            ? t("config.detection.person")
+                            ? t("config.detection.objectDetection")
                             : capability.id === "face"
                               ? t("config.detection.face")
                               : t("config.detection.humanPose");
@@ -1123,14 +1331,47 @@ export function DeviceConfiguration({
                             <PersonStanding size={17} />
                           );
 
+                        const processingCapability =
+                          capability.processing_size ?? capability.processingSize;
+                        const processingSize =
+                          values.processing_size ??
+                          (processingCapability
+                            ? {
+                                width: processingCapability.width,
+                                height: processingCapability.height,
+                              }
+                            : undefined);
+                        const modelDetail =
+                          capability.id === "person"
+                            ? `${t("config.detection.currentModel")}: ${
+                                activeDetectionModel?.name ??
+                                draft.detection.person.model_name ??
+                                capability.model
+                              } · ${t("config.detection.source")}: ${
+                                activeDetectionModel ||
+                                draft.detection.person.model_source === "custom"
+                                  ? t("config.detection.customSource")
+                                  : t("config.detection.builtinSource")
+                              } · ${t("config.detection.runtimeStatus")}: ${
+                                draft.detection.person.runtime_status ??
+                                (values.enabled
+                                  ? t("common.enabled")
+                                  : t("common.disabled"))
+                              }`
+                            : capability.model;
+
                         return (
                           <DetectionRow
                             key={capability.id}
                             icon={icon}
                             title={title}
-                            detail={capability.model}
+                            detail={modelDetail}
                             supported
-                            enabled={values.enabled}
+                            enabled={
+                              values.enabled ||
+                              (capability.id === "person" &&
+                                activeDetectionModel?.active === true)
+                            }
                             value={values.threshold}
                             min={0}
                             max={1}
@@ -1147,10 +1388,21 @@ export function DeviceConfiguration({
                                 value,
                               )
                             }
+                            processingSize={processingSize}
+                            processingCapability={processingCapability}
+                            onProcessingSize={(value) =>
+                              configuration.updateDraft((nextDraft) => {
+                                if (capability.id === "person" || capability.id === "face") {
+                                  nextDraft.detection[capability.id].processing_size = value;
+                                } else if (nextDraft.detection.human_pose) {
+                                  nextDraft.detection.human_pose.processing_size = value;
+                                }
+                              })
+                            }
                           />
                         );
                       })}
-                      {configuration.capabilities.ai?.motion_detection && (
+                      {motionDetectionSupported && (
                         <DetectionRow
                           icon={<Activity size={17} />}
                           title={t("config.detection.motion")}
@@ -1171,6 +1423,21 @@ export function DeviceConfiguration({
                           onValue={(value) =>
                             configuration.updateDraft((draft) => {
                               draft.detection.motion.sensitivity = value;
+                            })
+                          }
+                          processingSize={
+                            configuration.draft.detection.motion.processing_size ??
+                            (motionProcessingCapability
+                              ? {
+                                  width: motionProcessingCapability.width,
+                                  height: motionProcessingCapability.height,
+                                }
+                              : undefined)
+                          }
+                          processingCapability={motionProcessingCapability}
+                          onProcessingSize={(value) =>
+                            configuration.updateDraft((draft) => {
+                              draft.detection.motion.processing_size = value;
                             })
                           }
                         />
@@ -1196,6 +1463,10 @@ export function DeviceConfiguration({
                       apiBaseUrl={selectedDevice.apiBaseUrl}
                       deviceId={device.device_id}
                       disabled={isBusy}
+                      refreshToken={modelRefreshToken}
+                      onActiveModelChange={setActiveDetectionModel}
+                      onDeploymentComplete={reloadAfterModelDeployment}
+                      onBeforeActivate={confirmCustomModelActivation}
                     />
                   </section>
                 </fieldset>

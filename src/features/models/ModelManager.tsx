@@ -8,7 +8,6 @@ import {
   Cpu,
   FileUp,
   Image,
-  KeyRound,
   LoaderCircle,
   Mic2,
   Pause,
@@ -45,7 +44,6 @@ import type {
   ImportFormSubmission,
   ImportTask,
   ImporterCatalog,
-  ModelAdminCredentials,
   ModelDetail,
   ModelImporter,
   ModelList,
@@ -60,11 +58,23 @@ import type {
 
 const TASK_POLL_INTERVAL_MS = 1_500;
 const IMPORT_STORAGE_PREFIX = "ovis_model_import_ids:";
+const MODEL_TASK_STORAGE_PREFIX = "ovis_model_task:";
+const MODEL_OUTCOME_STORAGE_PREFIX = "ovis_model_outcome:";
+
+interface PendingModelTask {
+  taskId: number;
+  modelId: string;
+  desiredActive: boolean;
+}
 
 interface ModelManagerProps {
   apiBaseUrl: string;
   deviceId: string;
   disabled?: boolean;
+  refreshToken?: number;
+  onActiveModelChange?: (activeModel: ModelSummary | null) => void;
+  onDeploymentComplete?: () => void | Promise<void>;
+  onBeforeActivate?: () => boolean;
 }
 
 const delay = (milliseconds: number, signal: AbortSignal) =>
@@ -85,6 +95,32 @@ const delay = (milliseconds: number, signal: AbortSignal) =>
   });
 
 const importStorageKey = (deviceId: string) => `${IMPORT_STORAGE_PREFIX}${deviceId}`;
+const modelTaskStorageKey = (deviceId: string) =>
+  `${MODEL_TASK_STORAGE_PREFIX}${deviceId}`;
+const modelOutcomeStorageKey = (deviceId: string) =>
+  `${MODEL_OUTCOME_STORAGE_PREFIX}${deviceId}`;
+
+const readPendingModelTask = (deviceId: string): PendingModelTask | null => {
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(modelTaskStorageKey(deviceId)) ?? "null",
+    ) as Partial<PendingModelTask> | null;
+    return value &&
+      Number.isInteger(value.taskId) &&
+      typeof value.modelId === "string" &&
+      typeof value.desiredActive === "boolean"
+      ? (value as PendingModelTask)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const writePendingModelTask = (deviceId: string, task: PendingModelTask) =>
+  window.localStorage.setItem(modelTaskStorageKey(deviceId), JSON.stringify(task));
+
+const clearPendingModelTask = (deviceId: string) =>
+  window.localStorage.removeItem(modelTaskStorageKey(deviceId));
 
 const readImportIds = (deviceId: string): string[] => {
   try {
@@ -132,6 +168,20 @@ const formatDate = (seconds: number, locale?: string) =>
     minute: "2-digit",
   }).format(new Date(seconds * 1000));
 
+const deploymentDraftFromState = (
+  state: DeploymentState,
+): DeploymentParameters => {
+  const draft = structuredClone(state.parameters);
+  if (!draft.processingSize) {
+    const schema = state.parameterSchema as Record<string, RuntimeJsonSchema>;
+    const constraints =
+      state.processingSizeConstraints ?? schema.processingSize?.constraints;
+    const initial = constraints?.presets[0];
+    if (initial) draft.processingSize = { ...initial };
+  }
+  return draft;
+};
+
 const taskIcon = (task: ModelTaskType) => {
   if (task === "object_detection") return <ScanSearch size={18} />;
   if (task === "image_classification") return <Image size={18} />;
@@ -150,16 +200,10 @@ const taskTypes: ModelTaskType[] = [
   "sound_classification",
 ];
 
-const metadataCount = (model: ModelSummary) =>
-  model.metadataSummary.keypointsCount ?? model.metadataSummary.labelsCount ?? 0;
-
-export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelManagerProps) {
+export function ModelManager({ apiBaseUrl, deviceId, disabled = false, refreshToken = 0, onActiveModelChange, onDeploymentComplete, onBeforeActivate }: ModelManagerProps) {
   const { t, i18n } = useTranslation();
   const [catalog, setCatalog] = useState<ImporterCatalog | null>(null);
   const [catalogReload, setCatalogReload] = useState(0);
-  const [credentials, setCredentials] = useState<ModelAdminCredentials | null>(null);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [modelList, setModelList] = useState<ModelList | null>(null);
   const [pendingImports, setPendingImports] = useState<ImportTask[]>([]);
   const [view, setView] = useState<ModelWorkspaceView>({ type: "list" });
@@ -172,7 +216,9 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   const [configTask, setConfigTask] = useState<ModelTask | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<ModelSummary | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() =>
+    window.sessionStorage.getItem(modelOutcomeStorageKey(deviceId)),
+  );
   const uploadHandle = useRef<UploadHandle | null>(null);
   const operationController = useRef<AbortController | null>(null);
 
@@ -220,19 +266,19 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   );
 
   const recoverImports = useCallback(
-    async (activeCredentials: ModelAdminCredentials) => {
+    async () => {
       const ids = readImportIds(deviceId);
       const recovered: ImportTask[] = [];
       await Promise.all(
         ids.map(async (id) => {
           try {
-            recovered.push(await getModelImport(apiBaseUrl, activeCredentials, id));
+            recovered.push(await getModelImport(apiBaseUrl, id));
           } catch (nextError) {
             if (!(nextError instanceof ModelApiError) || nextError.status !== 404) {
               return;
             }
             try {
-              await getModel(apiBaseUrl, activeCredentials, id);
+              await getModel(apiBaseUrl, id);
               forgetImport(deviceId, id);
             } catch {
               // Keep unknown IDs so a temporary manager outage does not lose recovery state.
@@ -250,50 +296,48 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   );
 
   const refreshModels = useCallback(
-    async (activeCredentials = credentials) => {
-      if (!activeCredentials) return;
-      const nextList = await listModels(apiBaseUrl, activeCredentials);
+    async () => {
+      const nextList = await listModels(apiBaseUrl);
       setModelList(nextList);
+      onActiveModelChange?.(
+        nextList.models.find(
+          (model) => model.active && model.task === "object_detection",
+        ) ?? null,
+      );
+      return nextList;
     },
-    [apiBaseUrl, credentials],
+    [apiBaseUrl, onActiveModelChange],
   );
 
-  const authenticate = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const nextCredentials = { username: username.trim(), password };
-    if (!nextCredentials.username || !nextCredentials.password) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const nextList = await listModels(apiBaseUrl, nextCredentials);
-      setCredentials(nextCredentials);
-      setPassword("");
-      setModelList(nextList);
-      await recoverImports(nextCredentials);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-    } finally {
-      setBusy(false);
-    }
-  };
+  useEffect(() => {
+    let active = true;
+    void Promise.all([refreshModels(), recoverImports()]).catch((nextError) => {
+      if (active) {
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [recoverImports, refreshModels, refreshToken]);
 
   const commitImport = useCallback(
-    async (task: ImportTask, activeCredentials: ModelAdminCredentials) => {
+    async (task: ImportTask) => {
       setBusy(true);
       setError(null);
       try {
         let model: ModelDetail;
         try {
-          model = await commitModelImport(apiBaseUrl, activeCredentials, task.id);
+          model = await commitModelImport(apiBaseUrl, task.id);
         } catch (commitError) {
           if (
             !(commitError instanceof ModelApiError) ||
             commitError.status === undefined ||
             commitError.status === 404
           ) {
-            model = await getModel(apiBaseUrl, activeCredentials, task.id);
+            model = await getModel(apiBaseUrl, task.id);
           } else {
-            const refreshed = await getModelImport(apiBaseUrl, activeCredentials, task.id);
+            const refreshed = await getModelImport(apiBaseUrl, task.id);
             setActiveImport(refreshed);
             setPendingImports((current) =>
               current.map((entry) => (entry.id === refreshed.id ? refreshed : entry)),
@@ -309,7 +353,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
         setActiveImport(null);
         setDetail(model);
         setView({ type: "detail", modelId: model.id });
-        await refreshModels(activeCredentials);
+        await refreshModels();
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
@@ -320,7 +364,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   );
 
   const uploadImport = useCallback(
-    async (task: ImportTask, file: File, activeCredentials: ModelAdminCredentials) => {
+    async (task: ImportTask, file: File) => {
       if (file.size !== task.fileSize) {
         setError(t("models.fileSizeMismatch"));
         return;
@@ -330,7 +374,6 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
       setUploadProgress({ loaded: 0, total: file.size, percent: 0 });
       const handle = uploadModelContent(
         apiBaseUrl,
-        activeCredentials,
         task.id,
         file,
         setUploadProgress,
@@ -344,7 +387,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
           ...current.filter((entry) => entry.id !== uploaded.id),
         ]);
         setUploadProgress({ loaded: file.size, total: file.size, percent: 100 });
-        await commitImport(uploaded, activeCredentials);
+        await commitImport(uploaded);
       } catch (nextError) {
         if (nextError instanceof DOMException && nextError.name === "AbortError") {
           setError(t("models.uploadCancelled"));
@@ -352,7 +395,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
           setError(nextError instanceof Error ? nextError.message : String(nextError));
         }
         try {
-          const refreshed = await getModelImport(apiBaseUrl, activeCredentials, task.id);
+          const refreshed = await getModelImport(apiBaseUrl, task.id);
           setActiveImport(refreshed);
           setPendingImports((current) => [
             refreshed,
@@ -370,11 +413,10 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   );
 
   const startImport = async (submission: ImportFormSubmission) => {
-    if (!credentials) return;
     setBusy(true);
     setError(null);
     try {
-      const task = await createModelImport(apiBaseUrl, credentials, {
+      const task = await createModelImport(apiBaseUrl, {
         importerId: submission.importer.id,
         schemaVersion: submission.importer.schemaVersion,
         name: submission.name,
@@ -385,7 +427,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
       setActiveImport(task);
       setPendingImports((current) => [task, ...current]);
       setView({ type: "import-task", importId: task.id });
-      await uploadImport(task, submission.file, credentials);
+      await uploadImport(task, submission.file);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
       setBusy(false);
@@ -401,11 +443,11 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   };
 
   const cancelImport = async () => {
-    if (!credentials || !activeImport) return;
+    if (!activeImport) return;
     uploadHandle.current?.cancel();
     setBusy(true);
     try {
-      await cancelModelImport(apiBaseUrl, credentials, activeImport.id);
+      await cancelModelImport(apiBaseUrl, activeImport.id);
       forgetImport(deviceId, activeImport.id);
       setPendingImports((current) => current.filter((entry) => entry.id !== activeImport.id));
       setActiveImport(null);
@@ -418,11 +460,10 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   };
 
   const openDetail = async (modelId: string) => {
-    if (!credentials) return;
     setBusy(true);
     setError(null);
     try {
-      const model = await getModel(apiBaseUrl, credentials, modelId);
+      const model = await getModel(apiBaseUrl, modelId);
       setDetail(model);
       setView({ type: "detail", modelId });
     } catch (nextError) {
@@ -433,17 +474,16 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   };
 
   const openDeployment = async (modelId: string) => {
-    if (!credentials) return;
     setBusy(true);
     setError(null);
     try {
       const [model, nextDeployment] = await Promise.all([
-        getModel(apiBaseUrl, credentials, modelId),
-        getModelDeployment(apiBaseUrl, credentials, modelId),
+        getModel(apiBaseUrl, modelId),
+        getModelDeployment(apiBaseUrl, modelId),
       ]);
       setDetail(model);
       setDeployment(nextDeployment);
-      setDeploymentDraft(structuredClone(nextDeployment.parameters));
+      setDeploymentDraft(deploymentDraftFromState(nextDeployment));
       setView({ type: "deployment", modelId });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -453,18 +493,17 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   };
 
   const saveDeployment = async () => {
-    if (!credentials || !detail || !deploymentDraft) return;
+    if (!detail || !deploymentDraft) return;
     setBusy(true);
     setError(null);
     try {
       const saved = await updateModelDeployment(
         apiBaseUrl,
-        credentials,
         detail.id,
         deploymentDraft,
       );
       setDeployment(saved);
-      setDeploymentDraft(structuredClone(saved.parameters));
+      setDeploymentDraft(deploymentDraftFromState(saved));
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
@@ -474,14 +513,13 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
 
   const inferTaskResult = useCallback(
     async (modelId: string, desiredActive: boolean) => {
-      if (!credentials) return false;
       const [model, nextDeployment] = await Promise.all([
-        getModel(apiBaseUrl, credentials, modelId),
-        getModelDeployment(apiBaseUrl, credentials, modelId),
+        getModel(apiBaseUrl, modelId),
+        getModelDeployment(apiBaseUrl, modelId),
       ]);
       setDetail(model);
       setDeployment(nextDeployment);
-      setDeploymentDraft(structuredClone(nextDeployment.parameters));
+      setDeploymentDraft(deploymentDraftFromState(nextDeployment));
       if (!desiredActive) {
         return (
           model.active === false &&
@@ -500,11 +538,95 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
           JSON.stringify(nextDeployment.parameters)
       );
     },
-    [apiBaseUrl, credentials],
+    [apiBaseUrl],
   );
 
-  const runDeploymentTask = async (desiredActive: boolean) => {
-    if (!credentials || !detail) return;
+  const pollDeploymentTask = useCallback(
+    async (
+      pending: PendingModelTask,
+      controller: AbortController,
+    ) => {
+      while (!controller.signal.aborted) {
+        try {
+          const task = await getModelTask(
+            apiBaseUrl,
+            pending.taskId,
+            controller.signal,
+          );
+          setConfigTask(task);
+          if (task.state === "failed") {
+            window.sessionStorage.setItem(
+              modelOutcomeStorageKey(deviceId),
+              task.message,
+            );
+            await refreshModels();
+            const [model, nextDeployment] = await Promise.all([
+              getModel(apiBaseUrl, pending.modelId),
+              getModelDeployment(apiBaseUrl, pending.modelId),
+            ]);
+            setDetail(model);
+            setDeployment(nextDeployment);
+            setDeploymentDraft(deploymentDraftFromState(nextDeployment));
+            await onDeploymentComplete?.();
+            clearPendingModelTask(deviceId);
+            throw new ModelApiError(task.message);
+          }
+          if (task.state === "succeeded") break;
+        } catch (nextError) {
+          if (!(nextError instanceof ModelApiError) || nextError.status !== 404) {
+            throw nextError;
+          }
+          if (await inferTaskResult(pending.modelId, pending.desiredActive)) break;
+          throw new ModelApiError(t("models.taskOutcomeUnknown"));
+        }
+        await delay(TASK_POLL_INTERVAL_MS, controller.signal);
+      }
+      if (!(await inferTaskResult(pending.modelId, pending.desiredActive))) {
+        throw new ModelApiError(t("models.taskOutcomeMismatch"));
+      }
+      clearPendingModelTask(deviceId);
+      window.sessionStorage.removeItem(modelOutcomeStorageKey(deviceId));
+      await refreshModels();
+      await onDeploymentComplete?.();
+    },
+    [apiBaseUrl, deviceId, inferTaskResult, onDeploymentComplete, refreshModels, t],
+  );
+
+  useEffect(() => {
+    const pending = readPendingModelTask(deviceId);
+    if (!pending) return;
+    const controller = new AbortController();
+    operationController.current?.abort();
+    operationController.current = controller;
+    setBusy(true);
+    setError(null);
+    void Promise.all([
+      getModel(apiBaseUrl, pending.modelId),
+      getModelDeployment(apiBaseUrl, pending.modelId),
+    ])
+      .then(([model, nextDeployment]) => {
+        if (controller.signal.aborted) return;
+        setDetail(model);
+        setDeployment(nextDeployment);
+        setDeploymentDraft(deploymentDraftFromState(nextDeployment));
+        setView({ type: "deployment", modelId: pending.modelId });
+        return pollDeploymentTask(pending, controller);
+      })
+      .catch((nextError) => {
+        if (!(nextError instanceof DOMException && nextError.name === "AbortError")) {
+          setError(nextError instanceof Error ? nextError.message : String(nextError));
+        }
+      })
+      .finally(() => setBusy(false));
+    return () => controller.abort();
+  }, [apiBaseUrl, deviceId, pollDeploymentTask]);
+
+  const runDeploymentTask = async (
+    desiredActive: boolean,
+    modelId = detail?.id,
+  ) => {
+    if (!modelId) return;
+    if (desiredActive && onBeforeActivate && !onBeforeActivate()) return;
     const controller = new AbortController();
     operationController.current?.abort();
     operationController.current = controller;
@@ -513,27 +635,15 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
     setConfigTask(null);
     try {
       const accepted = desiredActive
-        ? await activateModel(apiBaseUrl, credentials, detail.id, controller.signal)
-        : await deactivateModel(apiBaseUrl, credentials, detail.id, controller.signal);
-      while (!controller.signal.aborted) {
-        try {
-          const task = await getModelTask(apiBaseUrl, accepted.task_id, controller.signal);
-          setConfigTask(task);
-          if (task.state === "failed") throw new ModelApiError(task.message);
-          if (task.state === "succeeded") break;
-        } catch (nextError) {
-          if (!(nextError instanceof ModelApiError) || nextError.status !== 404) {
-            throw nextError;
-          }
-          if (await inferTaskResult(detail.id, desiredActive)) break;
-          throw new ModelApiError(t("models.taskOutcomeUnknown"));
-        }
-        await delay(TASK_POLL_INTERVAL_MS, controller.signal);
-      }
-      if (!(await inferTaskResult(detail.id, desiredActive))) {
-        throw new ModelApiError(t("models.taskOutcomeMismatch"));
-      }
-      await refreshModels(credentials);
+        ? await activateModel(apiBaseUrl, modelId, controller.signal)
+        : await deactivateModel(apiBaseUrl, modelId, controller.signal);
+      const pending = {
+        taskId: accepted.task_id,
+        modelId,
+        desiredActive,
+      };
+      writePendingModelTask(deviceId, pending);
+      await pollDeploymentTask(pending, controller);
     } catch (nextError) {
       if (!(nextError instanceof DOMException && nextError.name === "AbortError")) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -544,12 +654,12 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
   };
 
   const confirmDelete = async () => {
-    if (!credentials || !deleteCandidate || deleteCandidate.referenced) return;
+    if (!deleteCandidate || deleteCandidate.referenced || deleteCandidate.active) return;
     setBusy(true);
     try {
-      await deleteModel(apiBaseUrl, credentials, deleteCandidate.id);
+      await deleteModel(apiBaseUrl, deleteCandidate.id);
       setDeleteCandidate(null);
-      await refreshModels(credentials);
+      await refreshModels();
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
@@ -586,21 +696,6 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
     );
   }
 
-  if (!credentials) {
-    return (
-      <form className="model-auth" onSubmit={authenticate}>
-        <div>
-          <KeyRound size={18} />
-          <span><strong>{t("models.adminAccess")}</strong><small>{t("models.adminAccessDetail")}</small></span>
-        </div>
-        <label><span>{t("models.username")}</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-        <label><span>{t("models.password")}</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <button className="button button--secondary" type="submit" disabled={busy || disabled}>{busy ? <LoaderCircle className="button-spinner" size={14} /> : <KeyRound size={14} />}{t("models.unlock")}</button>
-        {error && <small role="alert">{error}</small>}
-      </form>
-    );
-  }
-
   return (
     <div className="model-manager" aria-busy={busy}>
       <header className="model-manager__toolbar">
@@ -611,12 +706,22 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
           <span><strong>{t(`models.views.${view.type}`)}</strong><small>{modelList ? t("models.modelCount", { count: modelList.models.length }) : t("models.loading")}</small></span>
         </div>
         <div>
-          <button type="button" className="icon-button" title={t("common.refresh")} disabled={busy || disabled} onClick={() => void Promise.all([refreshModels(), recoverImports(credentials)])}><RefreshCw size={15} /></button>
+          <button type="button" className="icon-button" title={t("common.refresh")} disabled={busy || disabled} onClick={() => void Promise.all([refreshModels(), recoverImports()])}><RefreshCw size={15} /></button>
           {view.type === "list" && <button type="button" className="button button--secondary" disabled={busy || disabled} onClick={() => setView({ type: "choose-task" })}><Plus size={14} />{t("models.addModel")}</button>}
         </div>
       </header>
 
-      {error && <div className="model-error" role="alert"><span>{error}</span><button className="icon-button" type="button" onClick={() => setError(null)}><X size={14} /></button></div>}
+      {error && <div className="model-error" role="alert"><span>{error}</span><button className="icon-button" type="button" onClick={() => { window.sessionStorage.removeItem(modelOutcomeStorageKey(deviceId)); setError(null); }}><X size={14} /></button></div>}
+      {busy && (configTask || readPendingModelTask(deviceId)) && (
+        <div className="model-operation-status" role="status">
+          <LoaderCircle className="button-spinner" size={15} />
+          <span>
+            <strong>{t("models.applying")}</strong>
+            <small>{configTask?.message ?? t("models.waitingForTask")}</small>
+          </span>
+          <output>{configTask?.progress ?? 0}%</output>
+        </div>
+      )}
 
       {view.type === "list" && (
         <ModelListView
@@ -624,9 +729,12 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
           pendingImports={pendingImports}
           locale={i18n.language}
           isDeployable={isDeployable}
+          disabled={busy || disabled}
           onImport={openImportTask}
           onDetail={(id) => void openDetail(id)}
           onDeployment={(id) => void openDeployment(id)}
+          onActivate={(id) => void runDeploymentTask(true, id)}
+          onDeactivate={(id) => void runDeploymentTask(false, id)}
           onDelete={setDeleteCandidate}
         />
       )}
@@ -654,7 +762,7 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
       )}
 
       {view.type === "import-task" && activeImport && (
-        <ImportTaskView task={activeImport} progress={uploadProgress} file={selectedRetryFile} busy={busy} onFile={setSelectedRetryFile} onRetry={() => { if (selectedRetryFile) void uploadImport(activeImport, selectedRetryFile, credentials); }} onCommit={() => void commitImport(activeImport, credentials)} onCancel={() => void cancelImport()} onCancelUpload={() => uploadHandle.current?.cancel()} />
+        <ImportTaskView task={activeImport} progress={uploadProgress} file={selectedRetryFile} busy={busy} onFile={setSelectedRetryFile} onRetry={() => { if (selectedRetryFile) void uploadImport(activeImport, selectedRetryFile); }} onCommit={() => void commitImport(activeImport)} onCancel={() => void cancelImport()} onCancelUpload={() => uploadHandle.current?.cancel()} />
       )}
 
       {view.type === "detail" && detail && (
@@ -662,23 +770,111 @@ export function ModelManager({ apiBaseUrl, deviceId, disabled = false }: ModelMa
       )}
 
       {view.type === "deployment" && detail && deployment && deploymentDraft && (
-        <ModelDeploymentView model={detail} deployment={deployment} draft={deploymentDraft} task={configTask} busy={busy || disabled} onDraft={setDeploymentDraft} onSave={() => void saveDeployment()} onActivate={() => void runDeploymentTask(true)} onDeactivate={() => void runDeploymentTask(false)} />
+        <ModelDeploymentView model={detail} importer={importerById(detail.importerId)} deployment={deployment} draft={deploymentDraft} task={configTask} busy={busy || disabled} onDraft={setDeploymentDraft} onSave={() => void saveDeployment()} onActivate={() => void runDeploymentTask(true)} onDeactivate={() => void runDeploymentTask(false)} />
       )}
 
       {deleteCandidate && (
         <div className="model-dialog" role="alertdialog" aria-labelledby="delete-model-title">
-          <div><strong id="delete-model-title">{t("models.deleteTitle")}</strong><span>{deleteCandidate.referenced ? t("models.deleteReferenced") : t("models.deleteDetail", { name: deleteCandidate.name })}</span></div>
+          <div><strong id="delete-model-title">{t("models.deleteTitle")}</strong><span>{deleteCandidate.referenced || deleteCandidate.active ? t("models.deleteReferenced") : t("models.deleteDetail", { name: deleteCandidate.name })}</span></div>
           <button type="button" className="button button--ghost" onClick={() => setDeleteCandidate(null)}>{t("common.cancel")}</button>
-          <button type="button" className="button button--secondary" disabled={deleteCandidate.referenced || busy} onClick={() => void confirmDelete()}><Trash2 size={14} />{t("common.delete")}</button>
+          <button type="button" className="button button--secondary" disabled={deleteCandidate.referenced || deleteCandidate.active || busy} onClick={() => void confirmDelete()}><Trash2 size={14} />{t("common.delete")}</button>
         </div>
       )}
     </div>
   );
 }
 
-function ModelListView({ models, pendingImports, locale, isDeployable, onImport, onDetail, onDeployment, onDelete }: { models: ModelSummary[]; pendingImports: ImportTask[]; locale: string; isDeployable: (model: ModelSummary) => boolean; onImport: (task: ImportTask) => void; onDetail: (id: string) => void; onDeployment: (id: string) => void; onDelete: (model: ModelSummary) => void }) {
+function ModelListView({
+  models,
+  pendingImports,
+  isDeployable,
+  disabled,
+  onImport,
+  onDetail,
+  onDeployment,
+  onActivate,
+  onDeactivate,
+  onDelete,
+}: {
+  models: ModelSummary[];
+  pendingImports: ImportTask[];
+  locale: string;
+  isDeployable: (model: ModelSummary) => boolean;
+  disabled: boolean;
+  onImport: (task: ImportTask) => void;
+  onDetail: (id: string) => void;
+  onDeployment: (id: string) => void;
+  onActivate: (id: string) => void;
+  onDeactivate: (id: string) => void;
+  onDelete: (model: ModelSummary) => void;
+}) {
   const { t } = useTranslation();
-  return <div className="model-list-view">{pendingImports.length > 0 && <div className="pending-imports"><h5>{t("models.pendingImports")}</h5>{pendingImports.map((task) => <button type="button" key={task.id} onClick={() => onImport(task)}><FileUp size={16} /><span><strong>{task.name}</strong><small>{task.importerId}</small></span><output data-status={task.status}>{t(`models.importStatus.${task.status}`)}</output></button>)}</div>}<div className="model-table"><div className="model-table__head"><span>{t("models.name")}</span><span>{t("models.type")}</span><span>{t("models.size")}</span><span>{t("models.count")}</span><span>{t("models.status")}</span><span>{t("models.created")}</span><span /></div>{models.map((model) => <div className="model-table__row" key={model.id}><button type="button" className="model-table__identity" onClick={() => onDetail(model.id)}><Box size={16} /><span><strong>{model.name}</strong><small>{model.importerId}</small></span></button><span>{model.task}</span><span>{formatBytes(model.fileSize)}</span><span>{metadataCount(model)}</span><span className="model-status-stack"><i data-active={model.active}>{model.active ? t("models.active") : t("models.inactive")}</i><small>{model.referenced ? t("models.referenced") : t("models.unreferenced")}</small></span><span>{formatDate(model.committedAt, locale)}</span><span className="model-table__actions">{isDeployable(model) && <button type="button" className="icon-button" title={t("models.deployment")} onClick={() => onDeployment(model.id)}><Activity size={14} /></button>}<button type="button" className="icon-button" title={model.referenced ? t("models.deleteReferenced") : t("common.delete")} disabled={model.referenced} onClick={() => onDelete(model)}><Trash2 size={14} /></button></span></div>)}{models.length === 0 && <div className="models-empty-state"><Box size={20} /><span>{t("models.empty")}</span></div>}</div></div>;
+  const sizeLabel = (value?: { width: number; height: number } | null) =>
+    value ? `${value.width} × ${value.height}` : t("models.unknown");
+  return (
+    <div className="model-list-view">
+      {pendingImports.length > 0 && (
+        <div className="pending-imports">
+          <h5>{t("models.pendingImports")}</h5>
+          {pendingImports.map((task) => (
+            <button type="button" key={task.id} onClick={() => onImport(task)}>
+              <FileUp size={16} />
+              <span><strong>{task.name}</strong><small>{task.importerId}</small></span>
+              <output data-status={task.status}>{t(`models.importStatus.${task.status}`)}</output>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="model-table">
+        <div className="model-table__head">
+          <span>{t("models.name")}</span>
+          <span>{t("models.architecture")}</span>
+          <span>{t("models.type")}</span>
+          <span>{t("models.status")}</span>
+          <span>{t("models.deployable")}</span>
+          <span>{t("models.tensorSize")}</span>
+          <span>{t("models.processingSize")}</span>
+          <span>{t("models.threshold")}</span>
+          <span>{t("models.size")}</span>
+          <span />
+        </div>
+        {models.map((model) => {
+          const processingSize =
+            model.processingSize ?? model.deployment?.processingSize;
+          const threshold = model.threshold ?? model.deployment?.threshold;
+          const deployable = isDeployable(model);
+          return (
+            <div className="model-table__row" key={model.id}>
+              <button type="button" className="model-table__identity" onClick={() => onDetail(model.id)}>
+                <Box size={16} />
+                <span><strong>{model.name}</strong><small>{model.importerId}</small></span>
+              </button>
+              <span>{model.modelType}</span>
+              <span>{model.task}</span>
+              <span className="model-status-stack">
+                <i data-active={model.active}>{model.active ? t("models.active") : t("models.inactive")}</i>
+                <small>{model.status}</small>
+              </span>
+              <span>{deployable ? t("common.enabled") : t("common.unsupported")}</span>
+              <span>{sizeLabel(model.tensorSize)}</span>
+              <span>{sizeLabel(processingSize)}</span>
+              <span>{threshold === undefined || threshold === null ? "-" : threshold.toFixed(2)}</span>
+              <span>{formatBytes(model.fileSize)}</span>
+              <span className="model-table__actions">
+                <button type="button" className="icon-button" disabled={disabled} title={t("models.viewDetail")} onClick={() => onDetail(model.id)}><Box size={14} /></button>
+                {deployable && <button type="button" className="icon-button" disabled={disabled} title={t("models.deployment")} onClick={() => onDeployment(model.id)}><Activity size={14} /></button>}
+                {deployable && (model.active
+                  ? <button type="button" className="icon-button" disabled={disabled} title={t("models.deactivate")} onClick={() => onDeactivate(model.id)}><Pause size={14} /></button>
+                  : <button type="button" className="icon-button" disabled={disabled} title={t("models.activate")} onClick={() => onActivate(model.id)}><Play size={14} /></button>)}
+                <button type="button" className="icon-button" title={model.referenced || model.active ? t("models.deleteReferenced") : t("common.delete")} disabled={disabled || model.referenced || model.active} onClick={() => onDelete(model)}><Trash2 size={14} /></button>
+              </span>
+            </div>
+          );
+        })}
+        {models.length === 0 && <div className="models-empty-state"><Box size={20} /><span>{t("models.empty")}</span></div>}
+      </div>
+    </div>
+  );
 }
 
 function ImportTaskView({ task, progress, file, busy, onFile, onRetry, onCommit, onCancel, onCancelUpload }: { task: ImportTask; progress: UploadProgress | null; file: File | null; busy: boolean; onFile: (file: File | null) => void; onRetry: () => void; onCommit: () => void; onCancel: () => void; onCancelUpload: () => void }) {
@@ -689,13 +885,28 @@ function ImportTaskView({ task, progress, file, busy, onFile, onRetry, onCommit,
 
 function ModelDetailView({ model, importer, locale, deployable, onDeployment, onDeactivate, onDelete, busy }: { model: ModelDetail; importer: ModelImporter | null; locale: string; deployable: boolean; onDeployment: () => void; onDeactivate: () => void; onDelete: () => void; busy: boolean }) {
   const { t } = useTranslation();
-  return <div className="model-detail-view"><header><Box size={22} /><div><span>{model.importerId}</span><h4>{model.name}</h4><small>{model.id}</small></div><output data-active={model.active}>{model.active ? t("models.active") : t("models.ready")}</output></header><dl><div><dt>{t("models.architecture")}</dt><dd>{model.modelType}</dd></div><div><dt>{t("models.type")}</dt><dd>{model.task}</dd></div><div><dt>{t("models.size")}</dt><dd>{formatBytes(model.fileSize)}</dd></div><div><dt>{t("models.committed")}</dt><dd>{formatDate(model.committedAt, locale)}</dd></div><div><dt>{t("models.checksum")}</dt><dd>{model.checksum ?? "-"}</dd></div><div><dt>{t("models.consumer")}</dt><dd>{importer?.runtimeConsumers.join(", ") || t("models.noConsumer")}</dd></div></dl><div className="model-metadata"><h5>{t("models.metadata")}</h5><pre>{JSON.stringify(model.metadata, null, 2)}</pre></div><footer>{deployable && <button className="button button--secondary" type="button" disabled={busy} onClick={onDeployment}><Activity size={14} />{t("models.deployment")}</button>}{model.active && <button className="button button--ghost" type="button" disabled={busy} onClick={onDeactivate}><Pause size={14} />{t("models.deactivate")}</button>}<button className="button button--ghost" type="button" disabled={busy || model.referenced} onClick={onDelete}><Trash2 size={14} />{t("common.delete")}</button></footer></div>;
+  const sizeLabel = (size?: { width: number; height: number } | null) =>
+    size ? `${size.width} × ${size.height}` : t("models.unknown");
+  return <div className="model-detail-view"><header><Box size={22} /><div><span>{model.importerId}</span><h4>{model.name}</h4><small>{model.id}</small></div><output data-active={model.active}>{model.active ? t("models.active") : t("models.ready")}</output></header><dl><div><dt>{t("models.architecture")}</dt><dd>{model.modelType}</dd></div><div><dt>{t("models.type")}</dt><dd>{model.task}</dd></div><div><dt>{t("models.tensorSize")}</dt><dd>{sizeLabel(model.tensorSize)}</dd></div><div><dt>{t("models.processingSize")}</dt><dd>{sizeLabel(model.deployment?.processingSize)}</dd></div><div><dt>{t("models.size")}</dt><dd>{formatBytes(model.fileSize)}</dd></div><div><dt>{t("models.committed")}</dt><dd>{formatDate(model.committedAt, locale)}</dd></div><div><dt>{t("models.checksum")}</dt><dd>{model.checksum ?? "-"}</dd></div><div><dt>{t("models.consumer")}</dt><dd>{importer?.runtimeConsumers.join(", ") || t("models.noConsumer")}</dd></div></dl><div className="model-metadata"><h5>{t("models.metadata")}</h5><pre>{JSON.stringify(model.metadata, null, 2)}</pre></div><footer>{deployable && <button className="button button--secondary" type="button" disabled={busy} onClick={onDeployment}><Activity size={14} />{t("models.deployment")}</button>}{model.active && <button className="button button--ghost" type="button" disabled={busy} onClick={onDeactivate}><Pause size={14} />{t("models.deactivate")}</button>}<button className="button button--ghost" type="button" disabled={busy || model.referenced || model.active} onClick={onDelete}><Trash2 size={14} />{t("common.delete")}</button></footer></div>;
 }
 
-function ModelDeploymentView({ model, deployment, draft, task, busy, onDraft, onSave, onActivate, onDeactivate }: { model: ModelDetail; deployment: DeploymentState; draft: DeploymentParameters; task: ModelTask | null; busy: boolean; onDraft: (parameters: DeploymentParameters) => void; onSave: () => void; onActivate: () => void; onDeactivate: () => void }) {
+function ModelDeploymentView({ model, importer, deployment, draft, task, busy, onDraft, onSave, onActivate, onDeactivate }: { model: ModelDetail; importer: ModelImporter | null; deployment: DeploymentState; draft: DeploymentParameters; task: ModelTask | null; busy: boolean; onDraft: (parameters: DeploymentParameters) => void; onSave: () => void; onActivate: () => void; onDeactivate: () => void }) {
   const { t } = useTranslation();
   const schema = deployment.parameterSchema as Record<string, RuntimeJsonSchema>;
   const threshold = schema.threshold ?? {};
+  const processingSchema = schema.processingSize ?? {};
+  const importerDeploymentSchema = importer?.deploymentSchema as
+    | RuntimeJsonSchema
+    | null
+    | undefined;
+  const importerProcessingSchema =
+    importerDeploymentSchema?.properties?.processingSize ??
+    ((importerDeploymentSchema as Record<string, RuntimeJsonSchema> | undefined)
+      ?.processingSize ?? {});
+  const processingConstraints =
+    deployment.processingSizeConstraints ??
+    processingSchema.constraints ??
+    importerProcessingSchema.constraints;
   const dirty = JSON.stringify(draft) !== JSON.stringify(deployment.parameters);
-  return <div className="model-deployment-view"><header><Activity size={20} /><span><strong>{model.name}</strong><small>{t("models.deploymentDetail")}</small></span><output data-active={deployment.active}>{deployment.active ? t("models.active") : t("models.inactive")}</output></header><label className="model-deployment-field"><span>{t("models.threshold")}</span><input type="range" min={threshold.minimum ?? 0} max={threshold.maximum ?? 1} step={threshold.step ?? 0.01} value={draft.threshold} disabled={busy} onChange={(event) => onDraft({ threshold: Number(event.target.value) })} /><input type="number" min={threshold.minimum ?? 0} max={threshold.maximum ?? 1} step={threshold.step ?? 0.01} value={draft.threshold} disabled={busy} onChange={(event) => onDraft({ threshold: Number(event.target.value) })} /></label><dl><div><dt>{t("models.savedParameters")}</dt><dd>{JSON.stringify(deployment.parameters)}</dd></div><div><dt>{t("models.appliedParameters")}</dt><dd>{deployment.appliedParameters ? JSON.stringify(deployment.appliedParameters) : "-"}</dd></div></dl>{task && <div className="model-task-progress"><span><span style={{ width: `${task.progress}%` }} /></span><output>{task.message} · {task.progress}%</output></div>}<footer><button className="button button--secondary" type="button" disabled={!dirty || busy} onClick={onSave}><Save size={14} />{t("models.saveDeployment")}</button>{deployment.active ? <button className="button button--ghost" type="button" disabled={busy} onClick={onDeactivate}><Pause size={14} />{t("models.deactivate")}</button> : <button className="button button--primary" type="button" disabled={busy || dirty} onClick={onActivate}><Play size={14} />{t("models.activate")}</button>}</footer></div>;
+  return <div className="model-deployment-view"><header><Activity size={20} /><span><strong>{model.name}</strong><small>{t("models.deploymentDetail")}</small></span><output data-active={deployment.active}>{deployment.active ? t("models.active") : t("models.inactive")}</output></header><label className="model-deployment-field"><span>{t("models.threshold")}</span><input type="range" min={threshold.minimum ?? 0} max={threshold.maximum ?? 1} step={threshold.step ?? 0.01} value={draft.threshold} disabled={busy} onChange={(event) => onDraft({ ...draft, threshold: Number(event.target.value) })} /><input type="number" min={threshold.minimum ?? 0} max={threshold.maximum ?? 1} step={threshold.step ?? 0.01} value={draft.threshold} disabled={busy} onChange={(event) => onDraft({ ...draft, threshold: Number(event.target.value) })} /></label>{processingConstraints && draft.processingSize && <div className="model-deployment-size"><span>{t("models.processingSize")}</span><select value={processingConstraints.presets.some((preset) => preset.width === draft.processingSize?.width && preset.height === draft.processingSize?.height) ? `${draft.processingSize.width}x${draft.processingSize.height}` : "custom"} disabled={busy} onChange={(event) => { if (event.target.value === "custom") return; const [width, height] = event.target.value.split("x").map(Number); onDraft({ ...draft, processingSize: { width, height } }); }}>{processingConstraints.presets.map((preset) => <option key={`${preset.width}x${preset.height}`} value={`${preset.width}x${preset.height}`}>{preset.width} × {preset.height}</option>)}<option value="custom">{t("config.processingSize.custom")}</option></select><input aria-label={t("config.processingSize.width")} type="number" min={processingConstraints.minWidth} max={processingConstraints.maxWidth} step={processingConstraints.widthStep} value={draft.processingSize.width} disabled={busy} onChange={(event) => onDraft({ ...draft, processingSize: { ...draft.processingSize!, width: Number(event.target.value) } })} /><span>×</span><input aria-label={t("config.processingSize.height")} type="number" min={processingConstraints.minHeight} max={processingConstraints.maxHeight} step={processingConstraints.heightStep} value={draft.processingSize.height} disabled={busy} onChange={(event) => onDraft({ ...draft, processingSize: { ...draft.processingSize!, height: Number(event.target.value) } })} /></div>}<dl><div><dt>{t("models.tensorSize")}</dt><dd>{model.tensorSize ? `${model.tensorSize.width} × ${model.tensorSize.height}` : t("models.unknown")}</dd></div><div><dt>{t("models.savedParameters")}</dt><dd>{JSON.stringify(deployment.parameters)}</dd></div><div><dt>{t("models.appliedParameters")}</dt><dd>{deployment.appliedParameters ? JSON.stringify(deployment.appliedParameters) : "-"}</dd></div></dl>{task && <div className="model-task-progress"><span><span style={{ width: `${task.progress}%` }} /></span><output>{task.message} · {task.progress}%</output></div>}<footer><button className="button button--secondary" type="button" disabled={!dirty || busy} onClick={onSave}><Save size={14} />{t("models.saveDeployment")}</button>{deployment.active ? <button className="button button--ghost" type="button" disabled={busy} onClick={onDeactivate}><Pause size={14} />{t("models.deactivate")}</button> : <button className="button button--primary" type="button" disabled={busy || dirty} onClick={onActivate}><Play size={14} />{t("models.activate")}</button>}</footer></div>;
 }
