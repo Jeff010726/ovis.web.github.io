@@ -24,8 +24,10 @@ import {
 import type { PendingConfigApplication } from "./config.session";
 import type {
   ConfigApplicationState,
+  ConfigApplicationConfirmation,
   ConfigCapabilities,
   ConfigIssue,
+  ConfigPayload,
   ConfigTask,
   ConfigValidationResponse,
   ConfigurationOutcome,
@@ -75,6 +77,17 @@ const serializeConfigValues = (
       },
     },
   };
+
+  if (values.outputs) {
+    serialized.outputs = {
+      rtsp: {
+        enabled: values.outputs.rtsp.enabled,
+      },
+      uvc: {
+        enabled: values.outputs.uvc.enabled,
+      },
+    };
+  }
 
   if (values.detection.human_pose) {
     serialized.detection.human_pose = {
@@ -147,6 +160,7 @@ function validateDraftLocally(
     field: "video.main" | "video.sub",
     stream: DeviceConfigValues["video"]["main"],
     profiles: ConfigCapabilities["video"]["main"]["profiles"],
+    validateBitrate = true,
   ) => {
     const profile = profiles.find((entry) => entry.id === stream.profile);
     if (profiles.length > 0 && !profile) {
@@ -170,13 +184,17 @@ function validateDraftLocally(
         message: i18n.t("config.validation.unsupportedFps"),
       });
     }
-    if (!Number.isInteger(stream.bitrate_kbps) || stream.bitrate_kbps <= 0) {
+    if (
+      validateBitrate &&
+      (!Number.isInteger(stream.bitrate_kbps) || stream.bitrate_kbps <= 0)
+    ) {
       errors.push({
         field: `${field}.bitrate_kbps`,
         code: "INVALID_BITRATE",
         message: i18n.t("config.validation.invalidBitrate"),
       });
     } else if (
+      validateBitrate &&
       profile &&
       (stream.bitrate_kbps < profile.bitrate_min ||
         stream.bitrate_kbps > profile.bitrate_max)
@@ -192,8 +210,16 @@ function validateDraftLocally(
     }
   };
 
-  validateStream("video.main", values.video.main, capabilities.video.main.profiles);
-  if (values.video.sub.enabled) {
+  const rtspEnabled =
+    capabilities.outputs?.rtsp.supported !== true ||
+    values.outputs?.rtsp.enabled === true;
+  validateStream(
+    "video.main",
+    values.video.main,
+    capabilities.video.main.profiles,
+    rtspEnabled,
+  );
+  if (rtspEnabled && values.video.sub.enabled) {
     validateStream("video.sub", values.video.sub, capabilities.video.sub.profiles);
   }
 
@@ -268,6 +294,11 @@ interface VerificationResult {
   task: ConfigTask | null;
 }
 
+interface PendingValidatedApplication {
+  payload: ConfigPayload;
+  controller: AbortController;
+}
+
 export function useDeviceConfiguration({
   apiBaseUrl,
   deviceId,
@@ -295,7 +326,11 @@ export function useDeviceConfiguration({
   const [task, setTask] = useState<ConfigTask | null>(null);
   const [outcome, setOutcome] = useState<ConfigurationOutcome | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [applicationConfirmation, setApplicationConfirmation] =
+    useState<ConfigApplicationConfirmation | null>(null);
   const operationController = useRef<AbortController | null>(null);
+  const pendingValidatedApplication =
+    useRef<PendingValidatedApplication | null>(null);
 
   const hasChanges = useMemo(
     () =>
@@ -306,7 +341,10 @@ export function useDeviceConfiguration({
   );
 
   const applicationBusy = [
+    "validating",
+    "confirming",
     "saving",
+    "applying",
     "restart_pending",
     "reconnecting",
     "verifying",
@@ -396,14 +434,10 @@ export function useDeviceConfiguration({
           if (nextTask?.state === "failed") {
             return { document, capabilities: loadedCapabilities, task: nextTask };
           }
-          if (document.revision === pending.target_revision) {
+          if (nextTask?.state === "succeeded") {
             return { document, capabilities: loadedCapabilities, task: nextTask };
           }
-          if (
-            nextTask === null ||
-            nextTask.state === "succeeded" ||
-            nextTask.state === "completed"
-          ) {
+          if (nextTask === null) {
             return { document, capabilities: loadedCapabilities, task: nextTask };
           }
           await delay(
@@ -554,8 +588,99 @@ export function useDeviceConfiguration({
     [applicationBusy, applicationState],
   );
 
+  const finishApplicationError = useCallback(
+    async (error: unknown, controller: AbortController) => {
+      if (controller.signal.aborted) return;
+      pendingValidatedApplication.current = null;
+      setApplicationConfirmation(null);
+      clearPendingConfigApplication();
+      onApplicationLockChange(false);
+
+      if (error instanceof ConfigRequestError && error.status === 409) {
+        try {
+          const [nextCapabilities, document] = await Promise.all([
+            getConfigCapabilities(apiBaseUrl, controller.signal),
+            getCurrentConfig(apiBaseUrl, controller.signal),
+          ]);
+          if (controller.signal.aborted) return;
+          setCapabilities(nextCapabilities);
+          assignDocument(document);
+          setValidation(null);
+          setRequestError(null);
+          setStatus("ready");
+          setApplicationState("failed");
+          setOutcome({
+            type: "error",
+            message: i18n.t("config.validation.revisionConflict"),
+          });
+          return;
+        } catch (reloadError) {
+          if (controller.signal.aborted) return;
+          setStatus("error");
+          setApplicationState("failed");
+          setRequestError(
+            i18n.t("config.validation.revisionConflictReloadFailed", {
+              message: formatError(reloadError),
+            }),
+          );
+          return;
+        }
+      }
+
+      setApplicationState("failed");
+      setRequestError(formatError(error));
+      setOutcome({ type: "error", message: formatError(error) });
+    },
+    [apiBaseUrl, assignDocument, onApplicationLockChange],
+  );
+
+  const persistValidatedApplication = useCallback(
+    async ({ payload, controller }: PendingValidatedApplication) => {
+      pendingValidatedApplication.current = null;
+      setApplicationConfirmation(null);
+      setApplicationState("saving");
+
+      try {
+        const saved = await saveConfig(apiBaseUrl, payload, controller.signal);
+        if (!saved.saved) {
+          throw new ConfigRequestError(i18n.t("config.validation.notSaved"));
+        }
+        setTargetRevision(saved.revision);
+
+        setApplicationState("applying");
+        const startedAt = Date.now();
+        const taskReference = await applyConfig(
+          apiBaseUrl,
+          saved.revision,
+          controller.signal,
+        );
+        const pending: PendingConfigApplication = {
+          device_id: deviceId,
+          api_base_url: apiBaseUrl,
+          task_id: taskReference.task_id,
+          target_revision: saved.revision,
+          started_at: startedAt,
+        };
+        writePendingConfigApplication(pending);
+        setApplicationState("restart_pending");
+        await delay(700, controller.signal);
+        await resumeApplication(pending, controller);
+      } catch (error) {
+        await finishApplicationError(error, controller);
+      }
+    },
+    [apiBaseUrl, deviceId, finishApplicationError, resumeApplication],
+  );
+
   const saveAndApply = useCallback(async () => {
-    if (!capabilities || !draft || !revision || !hasChanges || applicationBusy) {
+    if (
+      !capabilities ||
+      !draft ||
+      !original ||
+      !revision ||
+      !hasChanges ||
+      applicationBusy
+    ) {
       return;
     }
     const localErrors = validateDraftLocally(capabilities, draft);
@@ -566,7 +691,7 @@ export function useDeviceConfiguration({
 
     const controller = beginOperation();
     const payload = { revision, values: serializeConfigValues(draft) };
-    setApplicationState("saving");
+    setApplicationState("validating");
     onApplicationLockChange(true);
     setRequestError(null);
     setOutcome(null);
@@ -584,49 +709,60 @@ export function useDeviceConfiguration({
         return;
       }
 
-      const saved = await saveConfig(apiBaseUrl, payload, controller.signal);
-      if (!saved.saved) {
-        throw new ConfigRequestError(i18n.t("config.validation.notSaved"));
-      }
-      setTargetRevision(saved.revision);
-
-      const startedAt = Date.now();
-      const taskReference = await applyConfig(
-        apiBaseUrl,
-        saved.revision,
-        controller.signal,
+      const managementReconnect = validationResult.requires.includes(
+        "management_reconnect",
       );
-      const pending: PendingConfigApplication = {
-        device_id: deviceId,
-        api_base_url: apiBaseUrl,
-        task_id: taskReference.task_id,
-        target_revision: saved.revision,
-        started_at: startedAt,
-      };
-      writePendingConfigApplication(pending);
-      setApplicationState("restart_pending");
-      await delay(700, controller.signal);
-      await resumeApplication(pending, controller);
+      const uvcChanged =
+        capabilities.outputs?.uvc.supported === true &&
+        original.outputs?.uvc.enabled !== draft.outputs?.uvc.enabled;
+      const needsConfirmation =
+        managementReconnect ||
+        uvcChanged ||
+        validationResult.warnings.length > 0;
+
+      if (needsConfirmation) {
+        pendingValidatedApplication.current = { payload, controller };
+        setApplicationConfirmation({
+          managementReconnect: managementReconnect || uvcChanged,
+          warnings: validationResult.warnings,
+        });
+        setApplicationState("confirming");
+        return;
+      }
+
+      await persistValidatedApplication({ payload, controller });
     } catch (error) {
-      if (controller.signal.aborted) return;
-      clearPendingConfigApplication();
-      onApplicationLockChange(false);
-      setApplicationState("failed");
-      setRequestError(formatError(error));
-      setOutcome({ type: "error", message: formatError(error) });
+      await finishApplicationError(error, controller);
     }
   }, [
     apiBaseUrl,
     applicationBusy,
     beginOperation,
     capabilities,
-    deviceId,
     draft,
+    finishApplicationError,
     hasChanges,
     onApplicationLockChange,
-    resumeApplication,
+    original,
+    persistValidatedApplication,
     revision,
   ]);
+
+  const confirmApplication = useCallback(() => {
+    const pending = pendingValidatedApplication.current;
+    if (!pending) return;
+    void persistValidatedApplication(pending);
+  }, [persistValidatedApplication]);
+
+  const cancelApplication = useCallback(() => {
+    const pending = pendingValidatedApplication.current;
+    pending?.controller.abort();
+    pendingValidatedApplication.current = null;
+    setApplicationConfirmation(null);
+    setValidation(null);
+    setApplicationState("idle");
+    onApplicationLockChange(false);
+  }, [onApplicationLockChange]);
 
   const pollResetTask = useCallback(
     async (taskId: number, controller: AbortController) => {
@@ -636,8 +772,7 @@ export function useDeviceConfiguration({
         setTask(nextTask);
         if (
           nextTask.state === "failed" ||
-          nextTask.state === "succeeded" ||
-          nextTask.state === "completed"
+          nextTask.state === "succeeded"
         ) {
           return nextTask;
         }
@@ -720,10 +855,13 @@ export function useDeviceConfiguration({
     task,
     outcome,
     requestError,
+    applicationConfirmation,
     hasChanges,
     load,
     updateDraft,
     saveAndApply,
+    confirmApplication,
+    cancelApplication,
     restoreDefaults,
     dismissOutcome,
   };

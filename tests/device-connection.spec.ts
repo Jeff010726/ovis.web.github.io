@@ -93,7 +93,11 @@ const secondDeviceInfo = {
 };
 
 const configCapabilities = {
-  schema_version: 2,
+  schema_version: 3,
+  outputs: {
+    rtsp: { supported: true },
+    uvc: { supported: true },
+  },
   video: {
     main: {
       profiles: [
@@ -155,6 +159,10 @@ const configCapabilities = {
 const currentConfig = {
   revision: "a81f36c2",
   values: {
+    outputs: {
+      rtsp: { enabled: true },
+      uvc: { enabled: true },
+    },
     video: {
       main: { profile: "1080p", fps: 30, bitrate_kbps: 10000 },
       sub: {
@@ -1176,13 +1184,17 @@ test("selects, confirms, connects, and disconnects locally", async ({ page }) =>
     name: "01 视频码流",
   });
   const detectionSectionButton = page.getByRole("button", {
-    name: "02 智能检测",
+    name: "03 智能检测",
+  });
+  const outputsSectionButton = page.getByRole("button", {
+    name: "02 输出服务",
   });
   const dashboard = page.getByRole("complementary", {
     name: "当前设备仪表盘",
   });
   const dashboardTop = (await dashboard.boundingBox())?.y;
   await expect(videoSectionButton).toHaveAttribute("aria-current", "true");
+  await expect(outputsSectionButton).toBeVisible();
   await detectionSectionButton.click();
   await expect(detectionSectionButton).toHaveAttribute("aria-current", "true");
   await expect
@@ -1260,7 +1272,58 @@ test("renders AI capabilities and keeps TPU features mutually exclusive", async 
   await motion.click();
   await expect(motion).toBeChecked();
   await expect(tracking).toBeChecked();
-  await expect(page.getByText("有未保存修改")).toBeVisible();
+  await expect(page.getByText("有未应用的修改")).toBeVisible();
+});
+
+test("renders output capabilities and disables only RTSP-dependent controls", async ({
+  page,
+}) => {
+  await mockConfigurationRead(page);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  const rtsp = page.getByRole("switch", { name: "启用 RTSP 输出" });
+  const uvc = page.getByRole("switch", { name: "启用 UVC USB 摄像头" });
+  const subEnabled = page.getByRole("switch", { name: "启用子码流" });
+  const mainStream = page.getByRole("region", { name: "主码流" });
+  const subStream = page.getByRole("region", { name: "子码流" });
+
+  await expect(rtsp).toBeChecked();
+  await expect(uvc).toBeChecked();
+  await rtsp.click();
+
+  await expect(rtsp).not.toBeChecked();
+  await expect(mainStream.getByRole("combobox", { name: "帧率" })).toBeEnabled();
+  await expect(mainStream.getByRole("spinbutton", { name: "码率" })).toBeDisabled();
+  await expect(mainStream.getByRole("spinbutton", { name: "码率" })).toHaveValue(10000);
+  await expect(subEnabled).toBeDisabled();
+  await expect(subEnabled).toBeChecked();
+  await expect(subStream.getByRole("combobox", { name: "帧率" })).toBeDisabled();
+  await expect(subStream.getByRole("spinbutton", { name: "码率" })).toBeDisabled();
+  await expect(uvc).toBeEnabled();
+  await uvc.click();
+  await expect(uvc).not.toBeChecked();
+  await expect(page.getByText("有未应用的修改")).toBeVisible();
+});
+
+test("hides output switches omitted by device capabilities", async ({ page }) => {
+  const limitedCapabilities = structuredClone(configCapabilities);
+  limitedCapabilities.outputs.rtsp.supported = false;
+  limitedCapabilities.outputs.uvc.supported = false;
+  await discoverSingleDevice(page);
+  await page.route("**/api/v1/config/capabilities", (route) =>
+    fulfillJson(route, limitedCapabilities),
+  );
+  await page.route("**/api/v1/config", (route) =>
+    fulfillJson(route, currentConfig),
+  );
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByRole("switch", { name: "启用 RTSP 输出" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用 UVC USB 摄像头" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /输出服务/ })).toHaveCount(0);
 });
 
 test("hides AI controls omitted by device capabilities", async ({ page }) => {
@@ -1434,8 +1497,14 @@ test("edits, validates, saves, applies, and polls configuration", async ({
     return fulfillJson(route, {
       valid: true,
       errors: [],
-      warnings: [],
-      requires: ["ipcamera_restart"],
+      warnings: [
+        {
+          field: "outputs.uvc.enabled",
+          code: "USB_RECONNECT",
+          message: "UVC 变更会短暂中断 USB 连接",
+        },
+      ],
+      requires: ["ipcamera_restart", "management_reconnect"],
     });
   });
   await page.route("**/api/v1/config/apply", async (route) => {
@@ -1447,10 +1516,10 @@ test("edits, validates, saves, applies, and polls configuration", async ({
     taskRequests += 1;
     return fulfillJson(route, {
       id: 12,
-      state: "succeeded",
-      stage: "completed",
-      progress: 100,
-      message: "配置应用成功",
+      state: taskRequests === 1 ? "running" : "succeeded",
+      stage: taskRequests === 1 ? "restarting_ipcamera" : "completed",
+      progress: taskRequests === 1 ? 60 : 100,
+      message: taskRequests === 1 ? "正在应用配置" : "配置应用成功",
     });
   });
   await page.route("**/api/v1/config", async (route) => {
@@ -1491,10 +1560,28 @@ test("edits, validates, saves, applies, and polls configuration", async ({
 
   await mainFps.selectOption("60");
   await page.getByRole("switch", { name: "启用 OSD" }).click();
-  await expect(page.getByText("有未保存修改")).toBeVisible();
-  const saveButton = page.getByRole("button", { name: "保存并应用" });
+  const rtspSwitch = page.getByRole("switch", { name: "启用 RTSP 输出" });
+  const uvcSwitch = page.getByRole("switch", { name: "启用 UVC USB 摄像头" });
+  await expect(rtspSwitch).toBeChecked();
+  await expect(uvcSwitch).toBeChecked();
+  await rtspSwitch.click();
+  await uvcSwitch.click();
+  await expect(page.getByText("有未应用的修改")).toBeVisible();
+  const saveButton = page.getByRole("button", { name: "应用配置" });
   await expect(saveButton).toBeEnabled();
   await saveButton.click();
+
+  const applyConfirmation = page.getByRole("alertdialog", {
+    name: "确认应用这些配置？",
+  });
+  await expect(applyConfirmation).toBeVisible();
+  await expect(applyConfirmation).toContainText(
+    "USB 连接和管理网络可能短暂重连",
+  );
+  await expect(applyConfirmation).toContainText("UVC 变更会短暂中断 USB 连接");
+  expect(savePayload).toBeNull();
+  await expect(uvcSwitch).toBeDisabled();
+  await applyConfirmation.getByRole("button", { name: "确认并应用" }).click();
 
   await expect(page.getByText("配置已保存，视频服务正在重启").first()).toBeVisible();
   await expect(page.getByTitle("重新搜索")).toBeDisabled();
@@ -1510,16 +1597,18 @@ test("edits, validates, saves, applies, and polls configuration", async ({
     task_id: 12,
     target_revision: "b929d204",
   });
-  await expect(page.getByText("正在等待设备恢复连接")).toBeVisible();
+  await expect(page.getByText("设备正在重新连接")).toBeVisible();
   await expect(page.getByText("设备重启中").first()).toBeVisible();
   await expect(page.getByText("等待设备确认")).toBeVisible();
   await page.screenshot({
     path: "/tmp/ovis-config-reconnecting-desktop.png",
     fullPage: true,
   });
-  await expect(page.getByText("配置应用成功")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("配置已应用")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("配置已同步")).toBeVisible();
-  expect(taskRequests).toBe(1);
+  await expect(rtspSwitch).not.toBeChecked();
+  await expect(uvcSwitch).not.toBeChecked();
+  expect(taskRequests).toBe(2);
   expect(reconnectRequests).toBe(3);
   expect(
     await page.evaluate(() =>
@@ -1537,6 +1626,10 @@ test("edits, validates, saves, applies, and polls configuration", async ({
         },
       },
       overlay: { enabled: false },
+      outputs: {
+        rtsp: { enabled: false },
+        uvc: { enabled: false },
+      },
     },
   });
   expect(
@@ -1602,10 +1695,10 @@ test("searches the address pool and reconnects only the original device id", asy
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("region", { name: "主码流" }).getByRole("spinbutton").fill("9000");
-  await page.getByRole("button", { name: "保存并应用" }).click();
+  await page.getByRole("button", { name: "应用配置" }).click();
 
-  await expect(page.getByText("正在等待设备恢复连接")).toBeVisible();
-  await expect(page.getByText("配置应用成功")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("设备正在重新连接")).toBeVisible();
+  await expect(page.getByText("配置已应用")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("192.168.44.1", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "OVIS Camera B" })).toHaveCount(0);
 });
@@ -1648,7 +1741,7 @@ test("resumes a pending application after refresh and accepts a missing task", a
 
   await page.goto("./");
   await expect(page.getByText("正在恢复设备连接")).toBeVisible();
-  await expect(page.getByText("配置应用成功")).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText("配置已应用")).toBeVisible({ timeout: 8_000 });
   await expect(page.getByRole("heading", { name: "OVIS Camera" })).toBeVisible();
   expect(
     await page.evaluate(() =>
@@ -1685,9 +1778,9 @@ test("fails verification when the target revision is not active", async ({
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("region", { name: "主码流" }).getByRole("spinbutton").fill("9000");
-  await page.getByRole("button", { name: "保存并应用" }).click();
+  await page.getByRole("button", { name: "应用配置" }).click();
 
-  await expect(page.getByText("配置未生效或已自动回滚")).toBeVisible({
+  await expect(page.getByText("应用失败，已恢复原配置").first()).toBeVisible({
     timeout: 6_000,
   });
 });
@@ -1726,7 +1819,7 @@ test("shows server validation errors without saving", async ({ page }) => {
   await page.getByRole("button", { name: "连接", exact: true }).click();
   const mainStream = page.getByRole("region", { name: "主码流" });
   await mainStream.getByRole("spinbutton").fill("12000");
-  await page.getByRole("button", { name: "保存并应用" }).click();
+  await page.getByRole("button", { name: "应用配置" }).click();
 
   await expect(page.getByText("配置校验未通过")).toBeVisible();
   await expect(page.getByText("码率范围为 512-15000 Kbps")).toBeVisible();
@@ -1734,7 +1827,47 @@ test("shows server validation errors without saving", async ({ page }) => {
     page.getByText("人员、人脸、人体姿态和目标跟踪最多只能启用一项"),
   ).toBeVisible();
   expect(saveRequests).toBe(0);
-  await expect(page.getByText("有未保存修改")).toBeVisible();
+  await expect(page.getByText("有未应用的修改")).toBeVisible();
+});
+
+test("reloads device configuration after a revision conflict", async ({ page }) => {
+  let configReads = 0;
+  let saveRequests = 0;
+  const reloadedConfig = structuredClone(currentConfig);
+  reloadedConfig.revision = "server-new-revision";
+  reloadedConfig.values.video.main.bitrate_kbps = 7777;
+
+  await page.route("**/api/v1/config/capabilities", (route) =>
+    fulfillJson(route, configCapabilities),
+  );
+  await page.route("**/api/v1/config/validate", (route) =>
+    route.fulfill({ status: 409, body: "" }),
+  );
+  await page.route("**/api/v1/config", (route) => {
+    if (route.request().method() === "PUT") {
+      saveRequests += 1;
+      return fulfillJson(route, { saved: false });
+    }
+    configReads += 1;
+    return fulfillJson(route, configReads === 1 ? currentConfig : reloadedConfig);
+  });
+
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  const bitrate = page
+    .getByRole("region", { name: "主码流" })
+    .getByRole("spinbutton", { name: "码率" });
+  await bitrate.fill("9000");
+  await page.getByRole("button", { name: "应用配置" }).click();
+
+  await expect(
+    page.getByText("配置已变化，已重新加载板端最新配置。"),
+  ).toBeVisible();
+  await expect(page.getByText("配置已同步")).toBeVisible();
+  await expect(bitrate).toHaveValue("7777");
+  expect(configReads).toBe(2);
+  expect(saveRequests).toBe(0);
 });
 
 test("reports automatic rollback when apply fails", async ({ page }) => {
@@ -1774,10 +1907,10 @@ test("reports automatic rollback when apply fails", async ({ page }) => {
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("region", { name: "主码流" }).getByRole("spinbutton").fill("9000");
-  await page.getByRole("button", { name: "保存并应用" }).click();
+  await page.getByRole("button", { name: "应用配置" }).click();
 
   await expect(page.getByText("新配置启动失败，已恢复原配置")).toBeVisible();
-  await expect(page.getByText("自动回滚成功，页面已重新读取设备配置。")).toBeVisible();
+  await expect(page.getByText("应用失败，已恢复原配置。")).toBeVisible();
   expect(postFailureConfigReads).toBe(1);
 });
 

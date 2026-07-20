@@ -8,12 +8,14 @@ import {
   LoaderCircle,
   Network,
   PersonStanding,
+  RadioTower,
   RefreshCw,
   RotateCcw,
   Save,
   ScanFace,
   Settings2,
   Unplug,
+  Usb,
   Video,
   Waypoints,
   Wifi,
@@ -118,6 +120,7 @@ interface StreamEditorProps {
   values: StreamConfigValues;
   profiles: VideoProfileCapability[];
   disabled: boolean;
+  bitrateDisabled?: boolean;
   issues: ConfigIssue[];
   updateDraft: (mutator: (draft: DeviceConfigValues) => void) => void;
 }
@@ -128,6 +131,7 @@ function StreamEditor({
   values,
   profiles,
   disabled,
+  bitrateDisabled = disabled,
   issues,
   updateDraft,
 }: StreamEditorProps) {
@@ -208,7 +212,7 @@ function StreamEditor({
               max={activeProfile?.bitrate_max ?? 100_000}
               step="1"
               value={values.bitrate_kbps}
-              disabled={disabled}
+              disabled={bitrateDisabled}
               aria-invalid={Boolean(fieldIssue("bitrate_kbps"))}
               onChange={(event) =>
                 updateDraft((draft) => {
@@ -395,16 +399,16 @@ const TPU_FEATURE_IDS: TpuFeatureId[] = [
 const isTpuFeatureId = (value: string): value is TpuFeatureId =>
   TPU_FEATURE_IDS.includes(value as TpuFeatureId);
 
-type ConfigSectionId = "video" | "detection";
+type ConfigSectionId = "video" | "outputs" | "detection";
 
-const CONFIG_SECTIONS: Array<{
+interface ConfigSection {
   id: ConfigSectionId;
   index: string;
-  labelKey: "config.sections.video" | "config.sections.detection";
-}> = [
-  { id: "video", index: "01", labelKey: "config.sections.video" },
-  { id: "detection", index: "02", labelKey: "config.sections.detection" },
-];
+  labelKey:
+    | "config.sections.video"
+    | "config.sections.outputs"
+    | "config.sections.detection";
+}
 
 export function DeviceConfiguration({
   device,
@@ -433,11 +437,36 @@ export function DeviceConfiguration({
   const editorRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<ConfigSectionId, HTMLElement | null>>({
     video: null,
+    outputs: null,
     detection: null,
   });
   const productImage = getDeviceImage(device.model);
   const issues = configuration.validation?.errors ?? [];
   const isBusy = configuration.applicationBusy || configuration.status === "resetting";
+  const outputCapabilities = configuration.capabilities?.outputs;
+  const outputValues = configuration.draft?.outputs;
+  const hasOutputServices =
+    outputValues !== undefined &&
+    (outputCapabilities?.rtsp.supported === true ||
+      outputCapabilities?.uvc.supported === true);
+  const rtspEnabled =
+    outputCapabilities?.rtsp.supported !== true ||
+    outputValues?.rtsp.enabled === true;
+  const configSections = useMemo<ConfigSection[]>(() => {
+    const sectionIds: Array<Pick<ConfigSection, "id" | "labelKey">> = [
+      { id: "video", labelKey: "config.sections.video" },
+      ...(hasOutputServices
+        ? [{ id: "outputs" as const, labelKey: "config.sections.outputs" as const }]
+        : []),
+      { id: "detection", labelKey: "config.sections.detection" },
+    ];
+    return sectionIds.map((section, index) => ({
+      ...section,
+      index: String(index + 1).padStart(2, "0"),
+    }));
+  }, [hasOutputServices]);
+  const sectionIndex = (sectionId: ConfigSectionId) =>
+    configSections.find((section) => section.id === sectionId)?.index;
   const activeStatus = (
     configuration.status === "resetting"
       ? "resetting"
@@ -445,7 +474,10 @@ export function DeviceConfiguration({
   ) as keyof typeof busyStatusLabel;
   const taskProgress = Math.min(100, Math.max(0, configuration.task?.progress ?? 0));
   const busyStatusLabel = {
+    validating: t("config.validating"),
+    confirming: t("config.confirming"),
     saving: t("config.saving"),
+    applying: t("config.applying"),
     restart_pending: t("config.restartPending"),
     reconnecting: t("config.reconnectingStatus"),
     verifying: t("config.verifyingStatus"),
@@ -507,9 +539,9 @@ export function DeviceConfiguration({
         editorIsScrollable &&
         editor.scrollTop + editor.clientHeight >= editor.scrollHeight - 2;
       if (editorIsAtBottom) {
-        nextSection = CONFIG_SECTIONS[CONFIG_SECTIONS.length - 1].id;
+        nextSection = configSections[configSections.length - 1].id;
       } else {
-        CONFIG_SECTIONS.forEach(({ id }) => {
+        configSections.forEach(({ id }) => {
           const section = sectionRefs.current[id];
           if (section && section.getBoundingClientRect().top <= editorTop + 150) {
             nextSection = id;
@@ -526,7 +558,7 @@ export function DeviceConfiguration({
       editor.removeEventListener("scroll", updateActiveSection);
       window.removeEventListener("scroll", updateActiveSection);
     };
-  }, [configuration.status]);
+  }, [configSections, configuration.status]);
 
   const scrollToSection = (sectionId: ConfigSectionId) => {
     const section = sectionRefs.current[sectionId];
@@ -715,7 +747,43 @@ export function DeviceConfiguration({
                   </div>
                 )}
 
-                {isBusy && (
+                {configuration.applicationConfirmation && (
+                  <div
+                    className="reset-confirmation config-apply-confirmation"
+                    role="alertdialog"
+                    aria-labelledby="config-apply-confirmation-title"
+                  >
+                    <div>
+                      <strong id="config-apply-confirmation-title">
+                        {t("config.applyConfirmTitle")}
+                      </strong>
+                      {configuration.applicationConfirmation.managementReconnect && (
+                        <span>{t("config.managementReconnectWarning")}</span>
+                      )}
+                      {configuration.applicationConfirmation.warnings.map((warning) => (
+                        <span key={`${warning.field}-${warning.code}`}>
+                          {warning.message}
+                        </span>
+                      ))}
+                    </div>
+                    <button
+                      className="button button--ghost"
+                      type="button"
+                      onClick={configuration.cancelApplication}
+                    >
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      className="button button--secondary"
+                      type="button"
+                      onClick={configuration.confirmApplication}
+                    >
+                      {t("config.confirmApply")}
+                    </button>
+                  </div>
+                )}
+
+                {isBusy && configuration.applicationState !== "confirming" && (
                   <div className="operation-progress" role="status">
                     <div>
                       <LoaderCircle size={16} />
@@ -752,13 +820,14 @@ export function DeviceConfiguration({
                     )}
                     <div>
                       <strong>{configuration.outcome.message}</strong>
-                      {configuration.outcome.type === "error" && (
+                      {configuration.outcome.type === "error" &&
+                        configuration.outcome.rolledBack !== undefined && (
                         <span>
                           {configuration.outcome.rolledBack
                             ? t("config.rollbackSuccess")
                             : t("config.rollbackUnconfirmed")}
                         </span>
-                      )}
+                        )}
                     </div>
                     <button
                       className="icon-button"
@@ -815,7 +884,7 @@ export function DeviceConfiguration({
                     <div className="config-section__heading">
                       <Video size={18} />
                       <div>
-                        <span>01</span>
+                        <span>{sectionIndex("video")}</span>
                         <h3 id="video-config-heading">{t("config.sections.video")}</h3>
                       </div>
                     </div>
@@ -826,6 +895,7 @@ export function DeviceConfiguration({
                         values={configuration.draft.video.main}
                         profiles={configuration.capabilities.video.main.profiles}
                         disabled={false}
+                        bitrateDisabled={!rtspEnabled}
                         issues={issues}
                         updateDraft={configuration.updateDraft}
                       />
@@ -834,6 +904,7 @@ export function DeviceConfiguration({
                           <span>{t("config.stream.sub")}</span>
                           <Toggle
                             checked={configuration.draft.video.sub.enabled}
+                            disabled={!rtspEnabled}
                             label={t("config.stream.enableSub")}
                             onChange={(checked) =>
                               configuration.updateDraft((draft) => {
@@ -847,13 +918,94 @@ export function DeviceConfiguration({
                           streamKey="sub"
                           values={configuration.draft.video.sub}
                           profiles={configuration.capabilities.video.sub.profiles}
-                          disabled={!configuration.draft.video.sub.enabled}
+                          disabled={
+                            !rtspEnabled ||
+                            !configuration.draft.video.sub.enabled
+                          }
                           issues={issues}
                           updateDraft={configuration.updateDraft}
                         />
                       </div>
                     </div>
                   </section>
+
+                  {hasOutputServices && outputValues && (
+                    <section
+                      className="config-section"
+                      aria-labelledby="output-config-heading"
+                      ref={(element) => {
+                        sectionRefs.current.outputs = element;
+                      }}
+                    >
+                      <div className="config-section__heading">
+                        <RadioTower size={18} />
+                        <div>
+                          <span>{sectionIndex("outputs")}</span>
+                          <h3 id="output-config-heading">
+                            {t("config.sections.outputs")}
+                          </h3>
+                        </div>
+                      </div>
+                      <div className="feature-list">
+                        {outputCapabilities?.rtsp.supported && (
+                          <div className="feature-row feature-row--simple">
+                            <div className="feature-row__identity">
+                              <span aria-hidden="true">
+                                <RadioTower size={17} />
+                              </span>
+                              <div>
+                                <strong>{t("config.outputs.rtsp")}</strong>
+                                <small>
+                                  {outputValues.rtsp.enabled
+                                    ? t("common.enabled")
+                                    : t("common.disabled")}
+                                </small>
+                              </div>
+                            </div>
+                            <Toggle
+                              checked={outputValues.rtsp.enabled}
+                              label={t("config.outputs.enableRtsp")}
+                              onChange={(checked) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.outputs) {
+                                    draft.outputs.rtsp.enabled = checked;
+                                  }
+                                })
+                              }
+                            />
+                          </div>
+                        )}
+                        {outputCapabilities?.uvc.supported && (
+                          <div className="feature-row feature-row--simple">
+                            <div className="feature-row__identity">
+                              <span aria-hidden="true">
+                                <Usb size={17} />
+                              </span>
+                              <div>
+                                <strong>{t("config.outputs.uvc")}</strong>
+                                <small>
+                                  {outputValues.uvc.enabled
+                                    ? t("common.enabled")
+                                    : t("common.disabled")}
+                                </small>
+                              </div>
+                            </div>
+                            <Toggle
+                              checked={outputValues.uvc.enabled}
+                              label={t("config.outputs.enableUvc")}
+                              onChange={(checked) =>
+                                configuration.updateDraft((draft) => {
+                                  if (draft.outputs) {
+                                    draft.outputs.uvc.enabled = checked;
+                                  }
+                                })
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  )}
 
                   <section
                     className="config-section"
@@ -865,7 +1017,7 @@ export function DeviceConfiguration({
                     <div className="config-section__heading">
                       <Settings2 size={18} />
                       <div>
-                        <span>02</span>
+                        <span>{sectionIndex("detection")}</span>
                         <h3 id="feature-config-heading">{t("config.sections.detectionFull")}</h3>
                       </div>
                     </div>
@@ -1038,12 +1190,12 @@ export function DeviceConfiguration({
           <div className="config-section-nav__header">
             <span>SECTION</span>
             <output>
-              {CONFIG_SECTIONS.find((section) => section.id === activeSection)?.index}
-              <small>/ {String(CONFIG_SECTIONS.length).padStart(2, "0")}</small>
+              {configSections.find((section) => section.id === activeSection)?.index}
+              <small>/ {String(configSections.length).padStart(2, "0")}</small>
             </output>
           </div>
           <div className="config-section-nav__list">
-            {CONFIG_SECTIONS.map((section) => (
+            {configSections.map((section) => (
               <button
                 type="button"
                 key={section.id}

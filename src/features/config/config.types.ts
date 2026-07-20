@@ -32,6 +32,15 @@ export interface AiCapabilities {
   motion_detection: boolean;
 }
 
+export interface OutputCapabilities {
+  rtsp: {
+    supported: boolean;
+  };
+  uvc: {
+    supported: boolean;
+  };
+}
+
 export interface ConfigCapabilities {
   schema_version: number;
   video: {
@@ -45,6 +54,7 @@ export interface ConfigCapabilities {
     motion_detection?: boolean;
   };
   ai?: AiCapabilities;
+  outputs?: OutputCapabilities;
 }
 
 export interface StreamConfigValues {
@@ -54,6 +64,14 @@ export interface StreamConfigValues {
 }
 
 export interface DeviceConfigValues {
+  outputs?: {
+    rtsp: {
+      enabled: boolean;
+    };
+    uvc: {
+      enabled: boolean;
+    };
+  };
   video: {
     main: StreamConfigValues;
     sub: StreamConfigValues & { enabled: boolean };
@@ -124,7 +142,6 @@ export type ConfigTaskState =
   | "queued"
   | "running"
   | "succeeded"
-  | "completed"
   | "failed";
 
 export interface ConfigTask {
@@ -144,7 +161,10 @@ export type ConfigurationStatus =
 
 export type ConfigApplicationState =
   | "idle"
+  | "validating"
+  | "confirming"
   | "saving"
+  | "applying"
   | "restart_pending"
   | "reconnecting"
   | "verifying"
@@ -155,4 +175,9 @@ export interface ConfigurationOutcome {
   type: "success" | "error";
   message: string;
   rolledBack?: boolean;
+}
+
+export interface ConfigApplicationConfirmation {
+  managementReconnect: boolean;
+  warnings: ConfigIssue[];
 }
