@@ -164,12 +164,11 @@ export async function fetchDeviceInfo(
   const abortFromParent = () => controller.abort();
   options.signal?.addEventListener("abort", abortFromParent, { once: true });
 
-  const requestOptions: RequestInit & { targetAddressSpace: "local" } = {
+  const requestOptions: RequestInit = {
     method: "GET",
     mode: "cors",
     cache: "no-store",
     signal: controller.signal,
-    targetAddressSpace: "local",
   };
 
   try {
@@ -208,12 +207,11 @@ export async function resetDeviceNetwork(
   const abortFromParent = () => controller.abort();
   signal?.addEventListener("abort", abortFromParent, { once: true });
 
-  const requestOptions: RequestInit & { targetAddressSpace: "local" } = {
+  const requestOptions: RequestInit = {
     method: "POST",
     mode: "cors",
     cache: "no-store",
     signal: controller.signal,
-    targetAddressSpace: "local",
   };
 
   try {
