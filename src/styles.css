@@ -1272,6 +1272,49 @@ a:focus-visible {
   gap: 8px;
 }
 
+.discovery-background-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.discovery-background-status svg {
+  animation: spin 1s linear infinite;
+}
+
+.device-connect-failure {
+  min-height: 48px;
+  padding: 8px clamp(26px, 4vw, 46px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #d8d8d8;
+  border-bottom: 1px solid #47272a;
+  background: #160d0e;
+  font-size: 10px;
+}
+
+.device-connect-failure > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.device-connect-failure small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.device-connect-failure > .button {
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 10px;
+  flex: 0 0 auto;
+}
+
 .usb-policy-notice {
   width: min(100%, 650px);
   margin-top: 14px;

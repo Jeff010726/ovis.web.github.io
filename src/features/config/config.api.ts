@@ -8,6 +8,10 @@ import type {
   SaveConfigResponse,
 } from "./config.types";
 import i18n from "../../i18n";
+import {
+  fetchLocalDevice,
+  LocalRequestTimeoutError,
+} from "../device/local-request";
 
 const REQUEST_TIMEOUT_MS = 5_000;
 
@@ -32,24 +36,23 @@ async function requestConfigApi<T>(
   path: string,
   options: ConfigRequestOptions = {},
 ): Promise<T> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const abortFromParent = () => controller.abort();
-  options.signal?.addEventListener("abort", abortFromParent, { once: true });
-
   const requestOptions: RequestInit = {
     method: options.method ?? "GET",
     mode: "cors",
     cache: "no-store",
-    signal: controller.signal,
     headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   };
 
   try {
-    const response = await fetch(
+    const response = await fetchLocalDevice(
       `${apiBaseUrl.replace(/\/$/, "")}${path}`,
       requestOptions,
+      {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        signal: options.signal,
+        retry: (options.method ?? "GET") === "GET",
+      },
     );
     if (!response.ok) {
       let message: string = i18n.t("config.validation.httpError", {
@@ -77,13 +80,13 @@ async function requestConfigApi<T>(
     }
   } catch (error) {
     if (error instanceof ConfigRequestError) throw error;
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      error instanceof LocalRequestTimeoutError ||
+      (error instanceof DOMException && error.name === "AbortError")
+    ) {
       throw new ConfigRequestError(i18n.t("config.validation.requestTimeout"));
     }
     throw new ConfigRequestError(i18n.t("config.validation.unreachable"));
-  } finally {
-    window.clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abortFromParent);
   }
 }
 

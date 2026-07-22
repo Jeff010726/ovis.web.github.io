@@ -6,6 +6,10 @@ import type {
   OvisDeviceInfo,
 } from "./device.types";
 import { getRememberedOvisDeviceHosts } from "./webusb.api";
+import {
+  fetchLocalDevice,
+  LocalRequestTimeoutError,
+} from "./local-request";
 
 const CONNECTION_TIMEOUT_MS = 3_000;
 const SCAN_TIMEOUT_MS = 1_500;
@@ -25,6 +29,11 @@ export const DEVICE_API_BASE_URLS = DEVICE_HOSTS.map(
 interface FetchDeviceInfoOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  retry?: boolean;
+}
+
+interface DiscoveryOptions {
+  onDevice?: (device: InitializedDevice) => void;
 }
 
 interface DiscoveryAttempt {
@@ -140,6 +149,9 @@ function validateDeviceInfo(value: unknown): OvisDeviceInfo {
 
 function mapRequestError(error: unknown): DeviceConnectionError {
   if (error instanceof DeviceConnectionError) return error;
+  if (error instanceof LocalRequestTimeoutError) {
+    return new DeviceConnectionError("CONNECTION_TIMEOUT");
+  }
   if (error instanceof DOMException) {
     if (error.name === "AbortError") {
       return new DeviceConnectionError("CONNECTION_TIMEOUT");
@@ -156,25 +168,21 @@ export async function fetchDeviceInfo(
   apiBaseUrl: string,
   options: FetchDeviceInfoOptions = {},
 ): Promise<OvisDeviceInfo> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? CONNECTION_TIMEOUT_MS,
-  );
-  const abortFromParent = () => controller.abort();
-  options.signal?.addEventListener("abort", abortFromParent, { once: true });
-
   const requestOptions: RequestInit = {
     method: "GET",
     mode: "cors",
     cache: "no-store",
-    signal: controller.signal,
   };
 
   try {
-    const response = await fetch(
+    const response = await fetchLocalDevice(
       `${apiBaseUrl.replace(/\/$/, "")}/device/info`,
       requestOptions,
+      {
+        timeoutMs: options.timeoutMs ?? CONNECTION_TIMEOUT_MS,
+        signal: options.signal,
+        retry: options.retry ?? true,
+      },
     );
     if (response.status === 404) {
       throw new DeviceConnectionError("DEVICE_NOT_FOUND");
@@ -192,9 +200,6 @@ export async function fetchDeviceInfo(
     return validateDeviceInfo(body);
   } catch (error) {
     throw mapRequestError(error);
-  } finally {
-    window.clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -202,22 +207,17 @@ export async function resetDeviceNetwork(
   apiBaseUrl: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), CONNECTION_TIMEOUT_MS);
-  const abortFromParent = () => controller.abort();
-  signal?.addEventListener("abort", abortFromParent, { once: true });
-
   const requestOptions: RequestInit = {
     method: "POST",
     mode: "cors",
     cache: "no-store",
-    signal: controller.signal,
   };
 
   try {
-    const response = await fetch(
+    const response = await fetchLocalDevice(
       `${apiBaseUrl.replace(/\/$/, "")}/device/network/reset`,
       requestOptions,
+      { timeoutMs: CONNECTION_TIMEOUT_MS, signal, retry: false },
     );
     if (response.status === 404) {
       throw new DeviceConnectionError("DEVICE_NOT_FOUND");
@@ -227,9 +227,6 @@ export async function resetDeviceNetwork(
     }
   } catch (error) {
     throw mapRequestError(error);
-  } finally {
-    window.clearTimeout(timeout);
-    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -271,6 +268,7 @@ async function attemptDiscoveryAddress(
     const info = await fetchDeviceInfo(apiBaseUrl, {
       timeoutMs: SCAN_TIMEOUT_MS,
       signal,
+      retry: false,
     });
     return {
       apiBaseUrl,
@@ -297,6 +295,7 @@ async function attemptDiscoveryAddress(
     const elapsedMs = performance.now() - startedAt;
     const permissionDenied = requestError.code === "PERMISSION_DENIED";
     const networkFailure = requestError.code === "NETWORK_ERROR";
+    console.debug("[OVIS discovery] request failed", apiBaseUrl, requestError.code);
     return {
       apiBaseUrl,
       timedOut: requestError.code === "CONNECTION_TIMEOUT",
@@ -312,6 +311,7 @@ async function attemptDiscoveryAddress(
 export async function discoverDevices(
   signal: AbortSignal,
   preferredApiBaseUrl?: string | null,
+  options: DiscoveryOptions = {},
 ): Promise<DiscoveryReport> {
   const startedAt = performance.now();
   let permissionState: LocalNetworkPermissionState = "unsupported";
@@ -349,6 +349,7 @@ export async function discoverDevices(
   // so Chrome can associate its Local Network Access prompt with that gesture.
   const permissionProbe = await attemptDiscoveryAddress(apiBaseUrls[0], signal);
   attempts.push(permissionProbe);
+  if (permissionProbe.device) options.onDevice?.(permissionProbe.device);
 
   permissionState = await queryLocalNetworkPermission();
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -363,7 +364,9 @@ export async function discoverDevices(
       const index = nextIndex;
       nextIndex += 1;
       if (index >= apiBaseUrls.length) return;
-      attempts.push(await attemptDiscoveryAddress(apiBaseUrls[index], signal));
+      const attempt = await attemptDiscoveryAddress(apiBaseUrls[index], signal);
+      attempts.push(attempt);
+      if (attempt.device) options.onDevice?.(attempt.device);
     }
   };
 

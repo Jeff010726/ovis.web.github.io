@@ -74,6 +74,12 @@ export interface DiscoveryReport {
   failureReason?: "permission-denied" | "browser-blocked" | "network-error";
 }
 
+export interface DeviceConnectionFailure {
+  deviceId: string;
+  apiBaseUrl: string;
+  code: DeviceConnectionErrorCode;
+}
+
 export interface UseDeviceConnection {
   state: DeviceState;
   devices: DiscoveredOvisDevice[];
@@ -88,6 +94,8 @@ export interface UseDeviceConnection {
   usbAuthorizationPending: boolean;
   usbIssue: string | null;
   discoveryReport: DiscoveryReport | null;
+  scanInProgress: boolean;
+  connectionFailure: DeviceConnectionFailure | null;
   scan(): Promise<void>;
   cancelScan(): void;
   selectDevice(deviceId: string): void;

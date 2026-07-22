@@ -54,6 +54,8 @@ function DeviceWorkspace() {
             usbPreflightReady={connection.usbPreflightReady}
             usbAuthorizationPending={connection.usbAuthorizationPending}
             usbIssue={connection.usbIssue}
+            scanInProgress={connection.scanInProgress}
+            connectionFailure={connection.connectionFailure}
             onScan={() => void connection.scan()}
             onCancelScan={connection.cancelScan}
             onSelectDevice={connection.selectDevice}

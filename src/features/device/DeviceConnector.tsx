@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
+  AlertTriangle,
   Cable,
   Check,
   ImageOff,
@@ -18,6 +19,7 @@ import { getDeviceImage } from "./device.assets";
 import { DeviceInitialization } from "./DeviceInitialization";
 import type {
   DeviceConnectionErrorCode,
+  DeviceConnectionFailure,
   DeviceState,
   DiscoveredOvisDevice,
   InitializedDevice,
@@ -39,6 +41,8 @@ interface DeviceConnectorProps {
   usbPreflightReady: boolean;
   usbAuthorizationPending: boolean;
   usbIssue: string | null;
+  scanInProgress: boolean;
+  connectionFailure: DeviceConnectionFailure | null;
   onScan: () => void;
   onCancelScan: () => void;
   onSelectDevice: (deviceId: string) => void;
@@ -127,6 +131,8 @@ export function DeviceConnector({
   usbPreflightReady,
   usbAuthorizationPending,
   usbIssue,
+  scanInProgress,
+  connectionFailure,
   onScan,
   onCancelScan,
   onSelectDevice,
@@ -297,6 +303,22 @@ export function DeviceConnector({
           </div>
         )}
 
+        {connectionFailure && (
+          <div className="device-connect-failure" role="alert">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>
+              {t("discovery.connectionFailed", {
+                endpoint: endpointLabel(connectionFailure.apiBaseUrl),
+              })}
+              <small>{t(`errors.${connectionFailure.code}.detail`)}</small>
+            </span>
+            <button className="button button--ghost" type="button" onClick={onConnect}>
+              <RefreshCw size={14} />
+              {t("discovery.retryConnection")}
+            </button>
+          </div>
+        )}
+
         {devices.length > 0 ? (
           <div
             className="device-results"
@@ -370,10 +392,26 @@ export function DeviceConnector({
 
         <footer className="discovery-actions">
           <div className="discovery-actions__secondary">
-            <button className="button button--ghost" type="button" onClick={onRescan}>
-              <RefreshCw size={15} />
-              {t("common.rescan")}
+            <button
+              className="button button--ghost"
+              type="button"
+              onClick={scanInProgress ? onCancelScan : onRescan}
+            >
+              {scanInProgress ? (
+                <Square size={13} fill="currentColor" />
+              ) : (
+                <RefreshCw size={15} />
+              )}
+              {scanInProgress
+                ? t("discovery.cancelBackgroundScan")
+                : t("common.rescan")}
             </button>
+            {scanInProgress && (
+              <span className="discovery-background-status" aria-live="polite">
+                <LoaderCircle size={14} />
+                {t("discovery.backgroundScanning")}
+              </span>
+            )}
           </div>
           {devices.length > 0 && (
             <button
@@ -385,7 +423,9 @@ export function DeviceConnector({
               <Cable size={17} />
               {selectedDevice?.initialization === "uninitialized"
                 ? t("usb.initialize")
-                : t("discovery.connect")}
+                : connectionFailure?.deviceId === selectedDevice?.deviceId
+                  ? t("discovery.retryConnection")
+                  : t("discovery.connect")}
               <ArrowRight className="button__arrow" size={16} />
             </button>
           )}

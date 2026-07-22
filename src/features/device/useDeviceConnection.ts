@@ -23,9 +23,11 @@ import {
   getAuthorizedOvisUsbDevices,
   isWebUsbAvailable,
   onWebUsbDeviceChange,
+  rememberOvisSubnet,
   requestOvisUsbDevice,
 } from "./webusb.api";
 import type {
+  DeviceConnectionFailure,
   DeviceConnectionErrorCode,
   DiscoveryReport,
   DeviceState,
@@ -65,6 +67,22 @@ const clearLastSuccessfulAddress = () => {
     window.sessionStorage.removeItem(LAST_DEVICE_ADDRESS_KEY);
   } catch {
     // The in-memory discovery hint is still cleared when storage is unavailable.
+  }
+};
+
+const rememberConnectedAddress = (deviceId: string, apiBaseUrl: string) => {
+  try {
+    const octets = new URL(apiBaseUrl).hostname.split(".");
+    if (
+      octets.length === 4 &&
+      octets[0] === "192" &&
+      octets[1] === "168" &&
+      Number.isInteger(Number(octets[2]))
+    ) {
+      rememberOvisSubnet(deviceId, Number(octets[2]));
+    }
+  } catch {
+    // A malformed hint must not affect a successful connection.
   }
 };
 
@@ -124,6 +142,9 @@ export function useDeviceConnection(): UseDeviceConnection {
   );
   const [discoveryReport, setDiscoveryReport] =
     useState<DiscoveryReport | null>(null);
+  const [scanInProgress, setScanInProgress] = useState(false);
+  const [connectionFailure, setConnectionFailure] =
+    useState<DeviceConnectionFailure | null>(null);
   const [usbPreflightReady, setUsbPreflightReady] = useState(
     !isWebUsbAvailable(),
   );
@@ -132,6 +153,7 @@ export function useDeviceConnection(): UseDeviceConnection {
   const applicationLockedRef = useRef(startupPending !== null);
   const operationGeneration = useRef(0);
   const scanController = useRef<AbortController | null>(null);
+  const connectController = useRef<AbortController | null>(null);
   const devicesRef = useRef<DiscoveredOvisDevice[]>([]);
   const connectedTarget = useRef<ConnectedTarget | null>(null);
   const lastSuccessfulAddress = useRef<string | null>(
@@ -171,6 +193,8 @@ export function useDeviceConnection(): UseDeviceConnection {
       connectedTarget.current = { apiBaseUrl, deviceId: info.device_id };
       lastSuccessfulAddress.current = apiBaseUrl;
       writeLastSuccessfulAddress(apiBaseUrl);
+      rememberConnectedAddress(info.device_id, apiBaseUrl);
+      setConnectionFailure(null);
       setState("connected");
     },
     [updateDevices],
@@ -257,11 +281,13 @@ export function useDeviceConnection(): UseDeviceConnection {
       setDevice(null);
       setConnectedAt(null);
       setError("UNSUPPORTED_BROWSER");
+      setScanInProgress(false);
       return;
     }
 
     const controller = new AbortController();
     scanController.current = controller;
+    setScanInProgress(true);
     setState("scanning");
     setSelectedDeviceId(null);
     setDevice(null);
@@ -269,6 +295,8 @@ export function useDeviceConnection(): UseDeviceConnection {
     setError(null);
     setUsbIssue(null);
     setDiscoveryReport(null);
+    setConnectionFailure(null);
+    updateDevices([]);
 
     const shouldRequestUsbDevice = manualUsbFallbackRef.current;
     setUsbAuthorizationPending(shouldRequestUsbDevice);
@@ -300,6 +328,31 @@ export function useDeviceConnection(): UseDeviceConnection {
     const networkDiscovery = discoverDevices(
       controller.signal,
       lastSuccessfulAddress.current,
+      {
+        onDevice: (discoveredDevice) => {
+          if (
+            controller.signal.aborted ||
+            operationGeneration.current !== generation
+          ) {
+            return;
+          }
+          const initialized = devicesRef.current.filter(
+            (entry): entry is InitializedDevice =>
+              entry.initialization === "initialized" &&
+              entry.deviceId !== discoveredDevice.deviceId,
+          );
+          const uninitialized = devicesRef.current.filter(
+            (entry) => entry.initialization === "uninitialized",
+          );
+          const nextDevices = mergeDiscoveredDevices(
+            [discoveredDevice, ...initialized],
+            uninitialized,
+          );
+          updateDevices(nextDevices);
+          setError(null);
+          setState("results");
+        },
+      },
     );
 
     try {
@@ -310,6 +363,7 @@ export function useDeviceConnection(): UseDeviceConnection {
       if (operationGeneration.current !== generation) return;
 
       scanController.current = null;
+      setScanInProgress(false);
       const usbSessionsById = new Map(
         usbReport.devices.map((session) => [session.info.device_id, session]),
       );
@@ -420,6 +474,7 @@ export function useDeviceConnection(): UseDeviceConnection {
         return;
       }
       scanController.current = null;
+      setScanInProgress(false);
       setUsbAuthorizationPending(false);
       setError("SCAN_NETWORK_ERROR");
       setState("error");
@@ -430,6 +485,7 @@ export function useDeviceConnection(): UseDeviceConnection {
     if (applicationLockedRef.current) return;
     scanController.current?.abort();
     scanController.current = null;
+    setScanInProgress(false);
     operationGeneration.current += 1;
     setUsbAuthorizationPending(false);
     setState(devicesRef.current.length > 0 ? "results" : "idle");
@@ -440,6 +496,9 @@ export function useDeviceConnection(): UseDeviceConnection {
     if (applicationLockedRef.current) return;
     setSelectedDeviceId(deviceId);
     setError(null);
+    setConnectionFailure((current) =>
+      current?.deviceId === deviceId ? current : null,
+    );
   }, []);
 
   const connect = useCallback(async () => {
@@ -451,6 +510,9 @@ export function useDeviceConnection(): UseDeviceConnection {
 
     if (target.initialization === "uninitialized") {
       scanController.current?.abort();
+      scanController.current = null;
+      setScanInProgress(false);
+      setUsbAuthorizationPending(false);
       operationGeneration.current += 1;
       setDevice(null);
       setConnectedAt(null);
@@ -460,15 +522,25 @@ export function useDeviceConnection(): UseDeviceConnection {
     }
 
     scanController.current?.abort();
+    scanController.current = null;
+    setScanInProgress(false);
+    setUsbAuthorizationPending(false);
     const generation = operationGeneration.current + 1;
     operationGeneration.current = generation;
     setState("connecting");
     setDevice(null);
     setConnectedAt(null);
     setError(null);
+    setConnectionFailure(null);
+
+    connectController.current?.abort();
+    const controller = new AbortController();
+    connectController.current = controller;
 
     try {
-      const info = await fetchDeviceInfo(target.apiBaseUrl);
+      const info = await fetchDeviceInfo(target.apiBaseUrl, {
+        signal: controller.signal,
+      });
       if (operationGeneration.current !== generation) return;
       if (info.device_id !== target.info.device_id) {
         throw new DeviceConnectionError("DEVICE_CHANGED");
@@ -487,21 +559,40 @@ export function useDeviceConnection(): UseDeviceConnection {
       };
       lastSuccessfulAddress.current = target.apiBaseUrl;
       writeLastSuccessfulAddress(target.apiBaseUrl);
+      rememberConnectedAddress(target.deviceId, target.apiBaseUrl);
       setDevice(info);
       setConnectedAt(new Date());
+      setConnectionFailure(null);
       setState("connected");
     } catch (requestError) {
       if (operationGeneration.current !== generation) return;
-      setState("error");
       const code =
         requestError instanceof DeviceConnectionError
           ? requestError.code
           : "NETWORK_ERROR";
-      setError(
+      const normalizedCode =
         code === "PERMISSION_DENIED"
           ? "LOCAL_NETWORK_PERMISSION_DENIED"
-          : code,
+          : code;
+      updateDevices(
+        devicesRef.current.map((entry) =>
+          entry.initialization === "initialized" &&
+          entry.deviceId === target.deviceId
+            ? { ...entry, status: "offline" as const }
+            : entry,
+        ),
       );
+      setConnectionFailure({
+        deviceId: target.deviceId,
+        apiBaseUrl: target.apiBaseUrl,
+        code: normalizedCode,
+      });
+      setError(null);
+      setState("results");
+    } finally {
+      if (connectController.current === controller) {
+        connectController.current = null;
+      }
     }
   }, [selectedDeviceId, updateDevices]);
 
@@ -516,16 +607,24 @@ export function useDeviceConnection(): UseDeviceConnection {
       }
 
       scanController.current?.abort();
+      scanController.current = null;
+      setScanInProgress(false);
+      connectController.current?.abort();
+      const controller = new AbortController();
+      connectController.current = controller;
       const generation = operationGeneration.current + 1;
       operationGeneration.current = generation;
       setSelectedDeviceId(null);
       setDevice(null);
       setConnectedAt(null);
       setError(null);
+      setConnectionFailure(null);
       setState("connecting");
 
       try {
-        const info = await fetchDeviceInfo(apiBaseUrl);
+        const info = await fetchDeviceInfo(apiBaseUrl, {
+          signal: controller.signal,
+        });
         if (operationGeneration.current !== generation) return;
         const manualDevice: InitializedDevice = {
           initialization: "initialized",
@@ -546,8 +645,10 @@ export function useDeviceConnection(): UseDeviceConnection {
         connectedTarget.current = { apiBaseUrl, deviceId: info.device_id };
         lastSuccessfulAddress.current = apiBaseUrl;
         writeLastSuccessfulAddress(apiBaseUrl);
+        rememberConnectedAddress(info.device_id, apiBaseUrl);
         setDevice(info);
         setConnectedAt(new Date());
+        setConnectionFailure(null);
         setState("connected");
       } catch (requestError) {
         if (operationGeneration.current !== generation) return;
@@ -561,6 +662,10 @@ export function useDeviceConnection(): UseDeviceConnection {
             : code,
         );
         setState("error");
+      } finally {
+        if (connectController.current === controller) {
+          connectController.current = null;
+        }
       }
     },
     [updateDevices],
@@ -569,11 +674,14 @@ export function useDeviceConnection(): UseDeviceConnection {
   const disconnect = useCallback(() => {
     if (applicationLockedRef.current) return;
     operationGeneration.current += 1;
+    connectController.current?.abort();
+    connectController.current = null;
     connectedTarget.current = null;
     setState(devicesRef.current.length > 0 ? "results" : "idle");
     setDevice(null);
     setError(null);
     setConnectedAt(null);
+    setConnectionFailure(null);
   }, []);
 
   const resetNetwork = useCallback(async () => {
@@ -720,6 +828,7 @@ export function useDeviceConnection(): UseDeviceConnection {
   useEffect(
     () => () => {
       scanController.current?.abort();
+      connectController.current?.abort();
       operationGeneration.current += 1;
     },
     [],
@@ -739,6 +848,8 @@ export function useDeviceConnection(): UseDeviceConnection {
     usbAuthorizationPending,
     usbIssue,
     discoveryReport,
+    scanInProgress,
+    connectionFailure,
     scan,
     cancelScan,
     selectDevice,

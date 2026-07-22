@@ -11,6 +11,10 @@ import type {
   UploadHandle,
   UploadProgress,
 } from "./model.types";
+import {
+  fetchLocalDevice,
+  LocalRequestTimeoutError,
+} from "../device/local-request";
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
@@ -36,24 +40,26 @@ async function requestModelApi<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const abortFromParent = () => controller.abort();
-  options.signal?.addEventListener("abort", abortFromParent, { once: true });
-
   const headers: Record<string, string> = {};
   if (options.csrf) headers["X-OVIS-CSRF"] = "1";
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
   try {
-    const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
-      method: options.method ?? "GET",
-      mode: "cors",
-      cache: "no-store",
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: controller.signal,
-    });
+    const response = await fetchLocalDevice(
+      `${apiBaseUrl.replace(/\/$/, "")}${path}`,
+      {
+        method: options.method ?? "GET",
+        mode: "cors",
+        cache: "no-store",
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      },
+      {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        signal: options.signal,
+        retry: (options.method ?? "GET") === "GET",
+      },
+    );
     if (!response.ok) {
       let message = `Model API returned HTTP ${response.status}`;
       try {
@@ -72,15 +78,15 @@ async function requestModelApi<T>(
     return (await response.json()) as T;
   } catch (error) {
     if (error instanceof ModelApiError) throw error;
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      error instanceof LocalRequestTimeoutError ||
+      (error instanceof DOMException && error.name === "AbortError")
+    ) {
       throw new ModelApiError("Model request timed out");
     }
     throw new ModelApiError(
       error instanceof Error ? error.message : "Unable to reach the model API",
     );
-  } finally {
-    window.clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abortFromParent);
   }
 }
 

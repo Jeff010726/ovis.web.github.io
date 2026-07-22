@@ -2434,6 +2434,217 @@ test("supports cancelling a scan and rescanning after an empty result", async ({
   await expect(page.getByText("发现 1 台 OVIS 设备")).toBeVisible();
 });
 
+test("shows a remembered Linux device immediately and can connect while the remaining scan is cancelled", async ({
+  page,
+}) => {
+  await page.addInitScript((deviceId) => {
+    localStorage.setItem("ovis-ncm-subnets", JSON.stringify({ [deviceId]: 23 }));
+  }, deviceInfo.device_id);
+  await mockConfigurationRead(page);
+  let targetRequests = 0;
+  await page.route("**/api/v1/device/info", async (route) => {
+    if (requestHost(route) === "192.168.23.1") {
+      targetRequests += 1;
+      return fulfillJson(route, deviceInfo);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    return route.abort("connectionrefused").catch(() => undefined);
+  });
+
+  await page.goto("./");
+  const startedAt = Date.now();
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  const result = page.getByRole("radio", { name: /OVIS Camera/ });
+  await expect(result).toBeVisible({ timeout: 700 });
+  expect(Date.now() - startedAt).toBeLessThan(850);
+  await expect(page.getByText("正在后台继续搜索其它网段")).toBeVisible();
+
+  await result.click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
+  expect(targetRequests).toBe(2);
+});
+
+test("retries a selected device GET after Failed to fetch and then connects", async ({
+  page,
+}) => {
+  await page.addInitScript((deviceId) => {
+    localStorage.setItem("ovis-ncm-subnets", JSON.stringify({ [deviceId]: 23 }));
+  }, deviceInfo.device_id);
+  await mockConfigurationRead(page);
+  let targetRequests = 0;
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) !== "192.168.23.1") {
+      return route.abort("connectionrefused");
+    }
+    targetRequests += 1;
+    if (targetRequests === 2) return route.abort("connectionrefused");
+    return fulfillJson(route, deviceInfo);
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await page.getByRole("radio", { name: /OVIS Camera/ }).click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByText("设备在线").first()).toBeVisible();
+  expect(targetRequests).toBe(3);
+});
+
+test("keeps a discovered device after three connection failures and retries only its endpoint", async ({
+  page,
+}) => {
+  await page.addInitScript((deviceId) => {
+    localStorage.setItem("ovis-ncm-subnets", JSON.stringify({ [deviceId]: 23 }));
+  }, deviceInfo.device_id);
+  let targetRequests = 0;
+  let allowTarget = true;
+  await page.route("**/api/v1/device/info", (route) => {
+    if (requestHost(route) !== "192.168.23.1") {
+      return route.abort("connectionrefused");
+    }
+    targetRequests += 1;
+    if (allowTarget) return fulfillJson(route, deviceInfo);
+    return route.abort("connectionrefused");
+  });
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  const result = page.getByRole("radio", { name: /OVIS Camera/ });
+  await result.click();
+  allowTarget = false;
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByText("无法连接 192.168.23.1:8080")).toBeVisible();
+  await expect(result).toBeVisible();
+  await expect(result).toContainText("离线");
+  expect(targetRequests).toBe(4);
+
+  await page.getByRole("button", { name: "重试连接" }).first().click();
+  await expect(page.getByText("无法连接 192.168.23.1:8080")).toBeVisible();
+  await expect(page.getByText("初始化 OVIS 设备")).toHaveCount(0);
+  expect(targetRequests).toBe(7);
+});
+
+test("does not retry a failed non-idempotent device write", async ({ page }) => {
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/config/validate", (route) =>
+    fulfillJson(route, { valid: true, errors: [], warnings: [], requires: [] }),
+  );
+  let putRequests = 0;
+  await page.route("**/api/v1/config", (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    putRequests += 1;
+    return route.abort("connectionrefused");
+  });
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await page.getByRole("switch", { name: "启用 OSD" }).click();
+  await page.getByRole("button", { name: "应用配置" }).click();
+
+  await expect.poll(() => putRequests).toBe(1);
+  await page.waitForTimeout(1_200);
+  expect(putRequests).toBe(1);
+});
+
+test("adds the local address-space hint on Linux Chromium requests", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    const calls: Array<{ url: string; targetAddressSpace?: string }> = [];
+    Object.defineProperty(window, "__ovisLocalFetchCalls", {
+      configurable: true,
+      value: calls,
+    });
+    window.fetch = (input, init) => {
+      calls.push({
+        url: input instanceof Request ? input.url : String(input),
+        targetAddressSpace: (init as RequestInit & { targetAddressSpace?: string })
+          ?.targetAddressSpace,
+      });
+      return originalFetch(input, init);
+    };
+  });
+  await mockConfigurationRead(page);
+  await page.route("**/api/v1/device/info", (route) =>
+    requestHost(route) === "192.168.42.1"
+      ? fulfillJson(route, deviceInfo)
+      : route.abort("connectionrefused"),
+  );
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await page.getByRole("radio", { name: /OVIS Camera/ }).click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+  await expect(page.getByText("设备在线").first()).toBeVisible();
+  const calls = await page.evaluate(() =>
+    (window as unknown as {
+      __ovisLocalFetchCalls: Array<{ url: string; targetAddressSpace?: string }>;
+    }).__ovisLocalFetchCalls,
+  );
+  expect(
+    calls.some(
+      (call) =>
+        call.url.includes("192.168.42.1:8080") &&
+        call.targetAddressSpace === "local",
+    ),
+  ).toBe(true);
+  expect(
+    calls.some(
+      (call) =>
+        call.url.includes("/config/capabilities") &&
+        call.targetAddressSpace === "local",
+    ),
+  ).toBe(true);
+});
+
+test("omits the local address-space hint on macOS Chromium requests", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+    });
+    const originalFetch = window.fetch.bind(window);
+    const calls: Array<{ url: string; targetAddressSpace?: string }> = [];
+    Object.defineProperty(window, "__ovisLocalFetchCalls", {
+      configurable: true,
+      value: calls,
+    });
+    window.fetch = (input, init) => {
+      calls.push({
+        url: input instanceof Request ? input.url : String(input),
+        targetAddressSpace: (init as RequestInit & { targetAddressSpace?: string })
+          ?.targetAddressSpace,
+      });
+      return originalFetch(input, init);
+    };
+  });
+  await page.route("**/api/v1/device/info", (route) =>
+    requestHost(route) === "192.168.42.1"
+      ? fulfillJson(route, deviceInfo)
+      : route.abort("connectionrefused"),
+  );
+
+  await page.goto("./");
+  await page.getByRole("button", { name: "搜索设备" }).click();
+  await expect(page.getByRole("radio", { name: /OVIS Camera/ })).toBeVisible();
+  const calls = await page.evaluate(() =>
+    (window as unknown as {
+      __ovisLocalFetchCalls: Array<{ url: string; targetAddressSpace?: string }>;
+    }).__ovisLocalFetchCalls,
+  );
+  expect(
+    calls
+      .filter((call) => call.url.includes("192.168.42.1:8080"))
+      .every((call) => call.targetAddressSpace === undefined),
+  ).toBe(true);
+});
+
 test("rejects a device whose identity changes before connection", async ({
   page,
 }) => {
@@ -2454,9 +2665,10 @@ test("rejects a device whose identity changes before connection", async ({
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
-  await expect(page.getByText("设备身份已变化")).toBeVisible();
-  await expect(page.getByRole("button", { name: "重新连接" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重新搜索" })).toBeVisible();
+  await expect(page.getByText("无法连接 192.168.42.1:8080")).toBeVisible();
+  await expect(page.getByText("所选地址对应的设备已更换，请重新搜索并确认设备。")).toBeVisible();
+  await expect(page.getByRole("radio", { name: /OVIS Camera/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试连接" }).first()).toBeVisible();
 });
 
 test("ignores incompatible responses during discovery", async ({ page }) => {
@@ -2494,7 +2706,7 @@ test("heartbeats only the selected device and stops after two failures", async (
   await expect(page.getByText("设备在线").first()).toBeVisible();
   await expect(page.getByText("设备连接已中断")).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText("操作异常")).toBeVisible();
-  expect(requestsByHost.get("192.168.42.1")).toBe(4);
+  expect(requestsByHost.get("192.168.42.1")).toBe(8);
   expect(requestsByHost.get("192.168.43.1")).toBe(1);
 });
 
