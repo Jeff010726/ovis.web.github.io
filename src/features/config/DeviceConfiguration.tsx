@@ -31,16 +31,23 @@ import type {
   AiFeatureCapability,
   ConfigIssue,
   DeviceConfigValues,
-  ObjectTrackingSearchMethod,
   ProcessingSize,
   ProcessingSizeCapability,
   StreamConfigValues,
+  TrackingFallbackSource,
+  TrackingStatus,
+  TrackingTargetSource,
   TpuFeatureId,
   VideoProfileCapability,
 } from "./config.types";
 import { useDeviceConfiguration } from "./useDeviceConfiguration";
 import { ModelManager } from "../models/ModelManager";
 import type { ModelSummary } from "../models/model.types";
+import {
+  clearTrackingTarget,
+  getTrackingStatus,
+  TrackingApiError,
+} from "./tracking.api";
 
 interface DeviceConfigurationProps {
   device: OvisDeviceInfo;
@@ -476,64 +483,112 @@ function DetectionRow({
   );
 }
 
-interface ObjectTrackingRowProps {
-  capability: AiFeatureCapability;
-  values: NonNullable<DeviceConfigValues["detection"]["object_tracking"]>;
+interface SingleObjectTrackingRowProps {
+  capability?: AiFeatureCapability;
+  values: DeviceConfigValues["tracking"]["single_object"];
+  detectionEnabled: boolean;
   disabled: boolean;
+  status: TrackingStatus | null;
+  runtimeError: string | null;
+  clearing: boolean;
+  hasChanges: boolean;
   onToggle: (checked: boolean) => void;
-  onSearchMethod: (method: ObjectTrackingSearchMethod) => void;
+  onDefaultSource: (source: TrackingTargetSource) => void;
+  onFallbackSource: (source: TrackingFallbackSource) => void;
   onKalman: (enabled: boolean) => void;
   onScoreThreshold: (value: number) => void;
-  onDetectionProcessingSize: (value: ProcessingSize) => void;
-  onTrackingProcessingSize: (value: ProcessingSize) => void;
+  onFastsamThreshold: (value: number) => void;
+  onColorTolerance: (value: number) => void;
+  onProcessingSize: (value: ProcessingSize) => void;
+  onClearTarget: () => void;
+  onSave: () => void;
 }
 
-function ObjectTrackingRow({
+function SingleObjectTrackingRow({
   capability,
   values,
+  detectionEnabled,
   disabled,
+  status,
+  runtimeError,
+  clearing,
+  hasChanges,
   onToggle,
-  onSearchMethod,
+  onDefaultSource,
+  onFallbackSource,
   onKalman,
   onScoreThreshold,
-  onDetectionProcessingSize,
-  onTrackingProcessingSize,
-}: ObjectTrackingRowProps) {
+  onFastsamThreshold,
+  onColorTolerance,
+  onProcessingSize,
+  onClearTarget,
+  onSave,
+}: SingleObjectTrackingRowProps) {
   const { t } = useTranslation();
-  const searchMethods = capability.search_methods ?? [];
+  const processingCapability =
+    capability?.processing_size ??
+    capability?.processingSize ??
+    capability?.tracking_processing_size ??
+    capability?.trackingProcessingSize;
+  const runtimeState = status?.state ?? "disabled";
+  const sourceOptions: TrackingTargetSource[] = [
+    "detection",
+    "fastsam",
+    "color",
+    "box",
+  ];
+  const fallbackOptions: TrackingFallbackSource[] = ["fastsam", "color", "box"];
 
   return (
-    <div className="feature-row feature-row--tracking">
+    <div className="feature-row feature-row--tracking tracking-panel">
       <div className="feature-row__identity">
         <span aria-hidden="true"><Waypoints size={17} /></span>
         <div>
-          <strong>{t("config.detection.objectTracking")}</strong>
+          <strong>{t("config.tracking.title")}</strong>
           <small>
-            {capability.model} · {values.enabled ? t("common.enabled") : t("common.disabled")}
+            {t("config.tracking.model")}: FearTrack · {t(`config.tracking.states.${runtimeState}`)}
           </small>
         </div>
       </div>
       <div className="tracking-controls">
         <label className="tracking-control tracking-control--method">
-          <span>{t("config.detection.searchMethod")}</span>
+          <span>{t("config.tracking.defaultSource")}</span>
           <select
-            value={values.search_method}
-            disabled={disabled || !values.enabled || searchMethods.length === 0}
+            value={values.default_target_source}
+            disabled={disabled || !values.enabled}
             onChange={(event) =>
-              onSearchMethod(event.target.value as ObjectTrackingSearchMethod)
+              onDefaultSource(event.target.value as TrackingTargetSource)
             }
           >
-            {searchMethods.map((method) => (
-              <option value={method} key={method}>
-                {method === "fastsam"
-                  ? t("config.detection.searchFastsam")
-                  : t("config.detection.searchColor")}
+            {sourceOptions.map((source) => (
+              <option
+                value={source}
+                key={source}
+                disabled={source === "detection" && !detectionEnabled}
+              >
+                {t(`config.tracking.sources.${source}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="tracking-control tracking-control--method">
+          <span>{t("config.tracking.fallbackSource")}</span>
+          <select
+            value={values.fallback_target_source}
+            disabled={disabled || !values.enabled}
+            onChange={(event) =>
+              onFallbackSource(event.target.value as TrackingFallbackSource)
+            }
+          >
+            {fallbackOptions.map((source) => (
+              <option value={source} key={source}>
+                {t(`config.tracking.sources.${source}`)}
               </option>
             ))}
           </select>
         </label>
         <label className="feature-row__range">
-          <span>{t("config.detection.scoreThreshold")}</span>
+          <span>{t("config.tracking.scoreThreshold")}</span>
           <input
             type="range"
             min={0}
@@ -546,11 +601,11 @@ function ObjectTrackingRow({
           <output>{values.score_threshold.toFixed(2)}</output>
         </label>
         <div className="tracking-control tracking-control--kalman">
-          <span>{t("config.detection.kalmanFilter")}</span>
+          <span>{t("config.tracking.kalmanFilter")}</span>
           <Toggle
             checked={values.use_kalman}
             disabled={disabled || !values.enabled}
-            label={t("config.detection.useKalman")}
+            label={t("config.tracking.useKalman")}
             onChange={onKalman}
           />
         </div>
@@ -558,46 +613,55 @@ function ObjectTrackingRow({
       <Toggle
         checked={values.enabled}
         disabled={disabled}
-        label={t("config.detection.enableObjectTracking")}
+        label={t("config.tracking.enable")}
         onChange={onToggle}
       />
-      {(capability.detection_processing_size ??
-        capability.detectionProcessingSize) && (
+      {!detectionEnabled && (
+        <div className="tracking-panel__notice">
+          {t("config.tracking.detectionRequired")}
+        </div>
+      )}
+      {detectionEnabled && values.enabled && (
+        <div className="tracking-panel__link-state">
+          {t("config.tracking.detectionAvailable")}
+        </div>
+      )}
+      <div className="tracking-parameter-grid">
+        <label className="feature-row__range">
+          <span>{t("config.tracking.fastsamThreshold")}</span>
+          <input type="range" min={0} max={1} step={0.01} value={values.fastsam.threshold} disabled={disabled || !values.enabled} onChange={(event) => onFastsamThreshold(Number(event.target.value))} />
+          <output>{values.fastsam.threshold.toFixed(2)}</output>
+        </label>
+        <label className="feature-row__range">
+          <span>{t("config.tracking.colorTolerance")}</span>
+          <input type="range" min={0} max={100} step={1} value={values.color.tolerance} disabled={disabled || !values.enabled} onChange={(event) => onColorTolerance(Number(event.target.value))} />
+          <output>{values.color.tolerance}</output>
+        </label>
+      </div>
+      {processingCapability && (
         <ProcessingSizeEditor
-          label={t("config.processingSize.trackingDetection")}
-          value={
-            values.detection_processing_size ??
-            processingSizeDefault(
-              (capability.detection_processing_size ??
-                capability.detectionProcessingSize)!,
-            )!
-          }
-          capability={
-            (capability.detection_processing_size ??
-              capability.detectionProcessingSize)!
-          }
+          label={t("config.processingSize.track")}
+          value={values.processing_size}
+          capability={processingCapability}
           disabled={disabled || !values.enabled}
-          onChange={onDetectionProcessingSize}
+          onChange={onProcessingSize}
         />
       )}
-      {(capability.tracking_processing_size ?? capability.trackingProcessingSize) && (
-        <ProcessingSizeEditor
-          label={t("config.processingSize.tracking")}
-          value={
-            values.tracking_processing_size ??
-            processingSizeDefault(
-              (capability.tracking_processing_size ??
-                capability.trackingProcessingSize)!,
-            )!
-          }
-          capability={
-            (capability.tracking_processing_size ??
-              capability.trackingProcessingSize)!
-          }
-          disabled={disabled || !values.enabled}
-          onChange={onTrackingProcessingSize}
-        />
+      {(runtimeError || status?.error) && (
+        <div className="tracking-panel__error" role="alert">
+          {runtimeError ?? status?.error?.message}
+        </div>
       )}
+      <div className="tracking-panel__actions">
+        <button className="button button--ghost" type="button" disabled={disabled || !values.enabled || clearing || !status?.target_valid} onClick={onClearTarget}>
+          {clearing ? <LoaderCircle className="button-spinner" size={14} /> : <X size={14} />}
+          {t("config.tracking.clearTarget")}
+        </button>
+        <button className="button button--secondary" type="button" disabled={disabled || !hasChanges} onClick={onSave}>
+          <Save size={14} />
+          {t("config.tracking.save")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -606,7 +670,6 @@ const TPU_FEATURE_IDS: TpuFeatureId[] = [
   "object",
   "face",
   "human_pose",
-  "object_tracking",
 ];
 
 const isTpuFeatureId = (value: string): value is TpuFeatureId =>
@@ -648,6 +711,9 @@ export function DeviceConfiguration({
   const [networkResetError, setNetworkResetError] = useState<string | null>(null);
   const [customModels, setCustomModels] = useState<ModelSummary[]>([]);
   const [modelRefreshToken, setModelRefreshToken] = useState(0);
+  const [trackingStatus, setTrackingStatus] = useState<TrackingStatus | null>(null);
+  const [trackingRuntimeError, setTrackingRuntimeError] = useState<string | null>(null);
+  const [trackingTargetClearing, setTrackingTargetClearing] = useState(false);
   const [activeSection, setActiveSection] =
     useState<ConfigSectionId>("video");
   const editorRef = useRef<HTMLDivElement>(null);
@@ -719,6 +785,21 @@ export function DeviceConfiguration({
   } as const;
 
   const issueMessage = (issue: ConfigIssue) => {
+    const trackingIssueKeys = {
+      DETECTION_NOT_ENABLED: "config.tracking.errors.detectionNotEnabled",
+      DETECTION_TARGET_NOT_FOUND:
+        "config.tracking.errors.DETECTION_TARGET_NOT_FOUND",
+      TRACKING_NOT_ENABLED: "config.tracking.errors.TRACKING_NOT_ENABLED",
+      TRACKING_TARGET_INVALID:
+        "config.tracking.errors.TRACKING_TARGET_INVALID",
+      TRACKING_EXTRACT_FAILED:
+        "config.tracking.errors.TRACKING_EXTRACT_FAILED",
+      TRACKING_INIT_FAILED: "config.tracking.errors.TRACKING_INIT_FAILED",
+      AI_RESOURCE_CONFLICT: "config.tracking.errors.resourceConflict",
+    } as const;
+    const trackingIssueKey =
+      trackingIssueKeys[issue.code as keyof typeof trackingIssueKeys];
+    if (trackingIssueKey) return t(trackingIssueKey);
     if (issue.code === "UNSUPPORTED_PROFILE") {
       return t("config.validation.unsupportedProfile");
     }
@@ -829,25 +910,113 @@ export function DeviceConfiguration({
   const nonObjectTpuCapabilities = tpuCapabilities.filter(
     (capability) => capability.id !== "object",
   );
+  const trackingCapability = configuration.capabilities?.ai?.features.find(
+    (capability) =>
+      capability.id === "single_object_tracking" ||
+      capability.id === "object_tracking",
+  );
   const objectValues = configuration.draft?.detection.object;
   const runtimeObjectValues = configuration.original?.detection.object;
-  const builtinDetectionActive =
-    objectValues?.enabled === true && objectValues.model.source === "builtin";
+  const trackingValues = configuration.draft?.tracking.single_object;
+  const runtimeTrackingValues = configuration.original?.tracking.single_object;
   const customDetectionActive =
     runtimeObjectValues?.enabled === true &&
-    runtimeObjectValues.model.source === "custom";
+    !runtimeObjectValues.model.startsWith("builtin.");
   const selectedCustomModel =
-    runtimeObjectValues?.model.source === "custom"
-      ? customModels.find((model) => model.id === runtimeObjectValues.model.id) ??
+    runtimeObjectValues && !runtimeObjectValues.model.startsWith("builtin.")
+      ? customModels.find((model) => model.id === runtimeObjectValues.model) ??
         null
       : null;
   const runningModelLabel = !runtimeObjectValues?.enabled
     ? t("config.detection.noRunningModel")
-    : runtimeObjectValues.model.source === "builtin"
-      ? t("config.detection.builtinRunningModel")
+    : runtimeObjectValues.model.startsWith("builtin.")
+      ? runtimeObjectValues.model === "builtin.person_vehicle_detection"
+        ? t("config.detection.builtinPersonVehicleRunningModel")
+        : t("config.detection.builtinRunningModel")
       : t("config.detection.customRunningModel", {
-          name: selectedCustomModel?.name ?? runtimeObjectValues.model.id,
+          name: selectedCustomModel?.name ?? runtimeObjectValues.model,
         });
+  const detectionHasChanges =
+    objectValues !== undefined &&
+    runtimeObjectValues !== undefined &&
+    JSON.stringify(objectValues) !== JSON.stringify(runtimeObjectValues);
+  const trackingHasChanges =
+    trackingValues !== undefined &&
+    runtimeTrackingValues !== undefined &&
+    JSON.stringify(trackingValues) !== JSON.stringify(runtimeTrackingValues);
+  const detectionModels = useMemo(
+    () => [
+      { id: "builtin.person_detection", name: t("config.detection.personModel") },
+      {
+        id: "builtin.person_vehicle_detection",
+        name: t("config.detection.personVehicleModel"),
+      },
+      ...customModels
+        .filter((model) => model.deployable && /detection/.test(model.task))
+        .map((model) => ({ id: model.id, name: model.name })),
+    ],
+    [customModels, t],
+  );
+
+  useEffect(() => {
+    if (!runtimeTrackingValues?.enabled || applicationLocked) {
+      setTrackingStatus(null);
+      setTrackingRuntimeError(null);
+      return;
+    }
+    const controller = new AbortController();
+    let requestRunning = false;
+    const refresh = async () => {
+      if (requestRunning) return;
+      requestRunning = true;
+      try {
+        const status = await getTrackingStatus(
+          selectedDevice.apiBaseUrl,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setTrackingStatus(status);
+        setTrackingRuntimeError(null);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setTrackingRuntimeError(
+          error instanceof TrackingApiError
+            ? error.message
+            : t("config.tracking.errors.unreachable"),
+        );
+      } finally {
+        requestRunning = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 3_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [applicationLocked, runtimeTrackingValues?.enabled, selectedDevice.apiBaseUrl, t]);
+
+  const clearCurrentTrackingTarget = async () => {
+    if (trackingTargetClearing) return;
+    const controller = new AbortController();
+    setTrackingTargetClearing(true);
+    setTrackingRuntimeError(null);
+    try {
+      const status = await clearTrackingTarget(
+        selectedDevice.apiBaseUrl,
+        controller.signal,
+      );
+      setTrackingStatus(status);
+    } catch (error) {
+      setTrackingRuntimeError(
+        error instanceof TrackingApiError
+          ? error.message
+          : t("config.tracking.errors.unreachable"),
+      );
+    } finally {
+      setTrackingTargetClearing(false);
+    }
+  };
 
   useEffect(() => {
     if (
@@ -871,8 +1040,7 @@ export function DeviceConfiguration({
     const draft = configuration.draft;
     const hasConflict =
       draft?.detection.face.enabled === true ||
-      draft?.detection.human_pose?.enabled === true ||
-      draft?.detection.object_tracking?.enabled === true;
+      draft?.detection.human_pose?.enabled === true;
     return !hasConflict || window.confirm(t("config.detection.conflictConfirm"));
   }, [configuration.draft, t]);
 
@@ -904,15 +1072,12 @@ export function DeviceConfiguration({
         if (draft.detection.human_pose) {
           draft.detection.human_pose.enabled = false;
         }
-        if (draft.detection.object_tracking) {
-          draft.detection.object_tracking.enabled = false;
-        }
       }
 
       if (featureId === "object" || featureId === "face") {
         draft.detection[featureId].enabled = enabled;
-      } else if (draft.detection[featureId]) {
-        draft.detection[featureId].enabled = enabled;
+      } else if (featureId === "human_pose" && draft.detection.human_pose) {
+        draft.detection.human_pose.enabled = enabled;
       }
     });
   };
@@ -1322,27 +1487,21 @@ export function DeviceConfiguration({
                         <strong>{runningModelLabel}</strong>
                       </div>
                       {objectCapability && objectValues && (
-                        <div className="builtin-detection-panel">
+                        <div className="builtin-detection-panel detection-panel">
                           <DetectionRow
                             icon={<Settings2 size={17} />}
-                            title={t("config.detection.builtinPerson")}
-                            detail={`${t("config.detection.model")}: TDL_MODEL_YOLOV8N_DET_MONITOR_PERSON`}
+                            title={t("config.detection.objectDetection")}
+                            detail={`${t("config.detection.currentModel")}: ${detectionModels.find((model) => model.id === objectValues.model)?.name ?? objectValues.model}`}
                             supported
-                            enabled={builtinDetectionActive}
-                            toggleDisabled={
-                              runtimeObjectValues?.model.source === "custom"
-                            }
+                            enabled={objectValues.enabled}
                             value={objectValues.threshold}
                             min={0}
                             max={1}
                             step={0.01}
                             valueLabel={objectValues.threshold.toFixed(2)}
                             rangeLabel={t("config.detection.threshold")}
-                            toggleLabel={t("config.detection.enableBuiltinPerson")}
-                            onToggle={(checked) => {
-                              if (runtimeObjectValues?.model.source === "custom") return;
-                              setTpuEnabled("object", checked);
-                            }}
+                            toggleLabel={t("config.detection.enablePerson")}
+                            onToggle={(checked) => setTpuEnabled("object", checked)}
                             onValue={(value) => setTpuThreshold("object", value)}
                             processingSize={
                               objectValues.processing_size ??
@@ -1366,13 +1525,28 @@ export function DeviceConfiguration({
                               })
                             }
                           />
-                          {runtimeObjectValues?.model.source === "custom" && (
-                            <div className="builtin-detection-panel__notice">
-                              <span>
-                                {customDetectionActive
-                                  ? t("config.detection.customModelBlocksBuiltin")
-                                  : t("config.detection.customModelSelected")}
-                              </span>
+                          <div className="detection-panel__controls">
+                            <label className="tracking-control">
+                              <span>{t("config.detection.modelSelection")}</span>
+                              <select
+                                aria-label={t("config.detection.modelSelection")}
+                                value={objectValues.model}
+                                disabled={isBusy}
+                                onChange={(event) =>
+                                  configuration.updateDraft((draft) => {
+                                    draft.detection.object.model = event.target.value;
+                                  })
+                                }
+                              >
+                                {!detectionModels.some((model) => model.id === objectValues.model) && (
+                                  <option value={objectValues.model}>{objectValues.model}</option>
+                                )}
+                                {detectionModels.map((model) => (
+                                  <option value={model.id} key={model.id}>{model.name}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="detection-panel__actions">
                               <button
                                 className="button button--ghost"
                                 type="button"
@@ -1381,9 +1555,72 @@ export function DeviceConfiguration({
                                 <Boxes size={14} />
                                 {t("config.detection.manageModels")}
                               </button>
+                              <button
+                                className="button button--secondary"
+                                type="button"
+                                disabled={isBusy || !detectionHasChanges}
+                                onClick={() => void configuration.saveAndApply("detection")}
+                              >
+                                <Save size={14} />
+                                {t("config.detection.save")}
+                              </button>
                             </div>
-                          )}
+                          </div>
                         </div>
+                      )}
+                      {trackingValues && trackingCapability && (
+                        <SingleObjectTrackingRow
+                          capability={trackingCapability}
+                          values={trackingValues}
+                          detectionEnabled={objectValues?.enabled === true}
+                          disabled={isBusy}
+                          status={trackingStatus}
+                          runtimeError={trackingRuntimeError}
+                          clearing={trackingTargetClearing}
+                          hasChanges={trackingHasChanges}
+                          onToggle={(enabled) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.enabled = enabled;
+                            })
+                          }
+                          onDefaultSource={(source) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.default_target_source = source;
+                            })
+                          }
+                          onFallbackSource={(source) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.fallback_target_source = source;
+                            })
+                          }
+                          onKalman={(enabled) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.use_kalman = enabled;
+                            })
+                          }
+                          onScoreThreshold={(value) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.score_threshold = value;
+                            })
+                          }
+                          onFastsamThreshold={(value) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.fastsam.threshold = value;
+                            })
+                          }
+                          onColorTolerance={(value) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.color.tolerance = value;
+                            })
+                          }
+                          onProcessingSize={(value) =>
+                            configuration.updateDraft((draft) => {
+                              draft.tracking.single_object.processing_size = value;
+                            })
+                          }
+                          onClearTarget={() => void clearCurrentTrackingTarget()}
+                          onSave={() => void configuration.saveAndApply("tracking")}
+                        />
                       )}
                       <div className="feature-row feature-row--simple">
                         <div className="feature-row__identity">
@@ -1415,60 +1652,6 @@ export function DeviceConfiguration({
                       {nonObjectTpuCapabilities.map((capability) => {
                         const draft = configuration.draft;
                         if (!draft) return null;
-                        if (capability.id === "object_tracking") {
-                          const tracking = draft.detection.object_tracking;
-                          if (!tracking) return null;
-                          return (
-                            <ObjectTrackingRow
-                              key={capability.id}
-                              capability={capability}
-                              values={tracking}
-                              disabled={
-                                (configuration.capabilities?.ai
-                                  ?.max_active_tpu_features ?? 0) < 1
-                              }
-                              onToggle={(checked) =>
-                                setTpuEnabled(capability.id, checked)
-                              }
-                              onSearchMethod={(method) =>
-                                configuration.updateDraft((draft) => {
-                                  if (draft.detection.object_tracking) {
-                                    draft.detection.object_tracking.search_method = method;
-                                  }
-                                })
-                              }
-                              onKalman={(enabled) =>
-                                configuration.updateDraft((draft) => {
-                                  if (draft.detection.object_tracking) {
-                                    draft.detection.object_tracking.use_kalman = enabled;
-                                  }
-                                })
-                              }
-                              onScoreThreshold={(value) =>
-                                configuration.updateDraft((draft) => {
-                                  if (draft.detection.object_tracking) {
-                                    draft.detection.object_tracking.score_threshold = value;
-                                  }
-                                })
-                              }
-                              onDetectionProcessingSize={(value) =>
-                                configuration.updateDraft((draft) => {
-                                  if (draft.detection.object_tracking) {
-                                    draft.detection.object_tracking.detection_processing_size = value;
-                                  }
-                                })
-                              }
-                              onTrackingProcessingSize={(value) =>
-                                configuration.updateDraft((draft) => {
-                                  if (draft.detection.object_tracking) {
-                                    draft.detection.object_tracking.tracking_processing_size = value;
-                                  }
-                                })
-                              }
-                            />
-                          );
-                        }
-
                         const values =
                           capability.id === "human_pose"
                             ? draft.detection.human_pose
@@ -1596,8 +1779,9 @@ export function DeviceConfiguration({
                       disabled={isBusy}
                       refreshToken={modelRefreshToken}
                       activeDetectionModelId={
-                        runtimeObjectValues?.model.source === "custom"
-                          ? runtimeObjectValues.model.id
+                        runtimeObjectValues &&
+                        !runtimeObjectValues.model.startsWith("builtin.")
+                          ? runtimeObjectValues.model
                           : null
                       }
                       customDetectionActive={customDetectionActive}

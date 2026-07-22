@@ -14,10 +14,32 @@ export interface StreamCapability {
 export type TpuFeatureId =
   | "object"
   | "face"
-  | "human_pose"
-  | "object_tracking";
+  | "human_pose";
 
-export type ObjectTrackingSearchMethod = "color" | "fastsam";
+export type TrackingTargetSource = "detection" | "fastsam" | "color" | "box";
+export type TrackingFallbackSource = Exclude<TrackingTargetSource, "detection">;
+
+export type TrackingRuntimeState =
+  | "disabled"
+  | "waiting_target"
+  | "extracting"
+  | "initializing"
+  | "tracking"
+  | "lost"
+  | "error";
+
+export interface TrackingStatus {
+  enabled: boolean;
+  state: TrackingRuntimeState;
+  source: TrackingTargetSource | null;
+  target_valid: boolean;
+  score: number | null;
+  detection_paused: boolean;
+  error: {
+    code: string;
+    message: string;
+  } | null;
+}
 
 export interface ProcessingSize {
   width: number;
@@ -53,7 +75,9 @@ export interface AiFeatureCapability {
   name: string;
   model?: string;
   model_selectable?: boolean;
-  search_methods?: ObjectTrackingSearchMethod[];
+  search_methods?: Array<"color" | "fastsam">;
+  target_sources?: TrackingTargetSource[];
+  fallback_target_sources?: TrackingFallbackSource[];
   processing_size?: ProcessingSizeCapability;
   processingSize?: ProcessingSizeCapability;
   detection_processing_size?: ProcessingSizeCapability;
@@ -99,6 +123,7 @@ export interface ConfigCapabilities {
     motion_detection?: boolean;
     human_pose?: boolean;
     object_tracking?: boolean;
+    single_object_tracking?: boolean;
   };
   ai?: AiCapabilities;
   outputs?: OutputCapabilities;
@@ -129,13 +154,9 @@ export interface DeviceConfigValues {
   detection: {
     object: {
       enabled: boolean;
+      model: string;
       threshold: number;
       processing_size: ProcessingSize;
-      model: {
-        source: "builtin" | "custom";
-        id: string;
-        runtime_model: string;
-      };
     };
     face: {
       enabled: boolean;
@@ -147,21 +168,31 @@ export interface DeviceConfigValues {
       threshold: number;
       processing_size?: ProcessingSize;
     };
-    object_tracking?: {
-      enabled: boolean;
-      search_method: ObjectTrackingSearchMethod;
-      use_kalman: boolean;
-      score_threshold: number;
-      detection_processing_size?: ProcessingSize;
-      tracking_processing_size?: ProcessingSize;
-    };
     motion: {
       enabled: boolean;
       sensitivity: number;
       processing_size?: ProcessingSize;
     };
   };
+  tracking: {
+    single_object: {
+      enabled: boolean;
+      default_target_source: TrackingTargetSource;
+      fallback_target_source: TrackingFallbackSource;
+      score_threshold: number;
+      use_kalman: boolean;
+      processing_size: ProcessingSize;
+      fastsam: {
+        threshold: number;
+      };
+      color: {
+        tolerance: number;
+      };
+    };
+  };
 }
+
+export type ConfigSaveScope = "all" | "detection" | "tracking";
 
 export interface DeviceConfigDocument {
   revision: string;

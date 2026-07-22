@@ -29,6 +29,7 @@ import type {
   ConfigCapabilities,
   ConfigIssue,
   ConfigPayload,
+  ConfigSaveScope,
   ConfigTask,
   ConfigValidationResponse,
   ConfigurationOutcome,
@@ -44,6 +45,73 @@ const TASK_VERIFY_INTERVAL_MS = 1_500;
 const MAX_RESET_TASK_POLLS = 60;
 
 const cloneValues = (values: DeviceConfigValues) => structuredClone(values);
+
+const normalizeDetectionModel = (model: unknown): string => {
+  if (typeof model === "string" && model.trim()) return model;
+  if (typeof model === "object" && model !== null) {
+    const legacy = model as { source?: unknown; id?: unknown; runtime_model?: unknown };
+    if (legacy.source === "custom" && typeof legacy.id === "string") {
+      return legacy.id;
+    }
+    if (
+      typeof legacy.runtime_model === "string" &&
+      /PERSON.*VEHICLE|VEHICLE.*PERSON/i.test(legacy.runtime_model)
+    ) {
+      return "builtin.person_vehicle_detection";
+    }
+  }
+  return "builtin.person_detection";
+};
+
+const normalizeConfigValues = (values: DeviceConfigValues): DeviceConfigValues => {
+  const normalized = cloneValues(values);
+  const raw = values as unknown as {
+    detection: DeviceConfigValues["detection"] & {
+      object: Omit<DeviceConfigValues["detection"]["object"], "model"> & {
+        model: unknown;
+      };
+      object_tracking?: {
+        enabled?: boolean;
+        search_method?: "color" | "fastsam";
+        use_kalman?: boolean;
+        score_threshold?: number;
+        tracking_processing_size?: ProcessingSize;
+      };
+    };
+    tracking?: Partial<DeviceConfigValues["tracking"]>;
+  };
+  normalized.detection.object.model = normalizeDetectionModel(raw.detection.object.model);
+
+  const legacyTracking = raw.detection.object_tracking;
+  const currentTracking = raw.tracking?.single_object;
+  const defaultSource =
+    currentTracking?.default_target_source ?? legacyTracking?.search_method ?? "box";
+  const fallbackSource =
+    currentTracking?.fallback_target_source ??
+    (defaultSource === "detection" ? "box" : defaultSource);
+  normalized.tracking = {
+    single_object: {
+      enabled: currentTracking?.enabled ?? legacyTracking?.enabled === true,
+      default_target_source: defaultSource,
+      fallback_target_source: fallbackSource,
+      score_threshold:
+        currentTracking?.score_threshold ?? legacyTracking?.score_threshold ?? 0.5,
+      use_kalman: currentTracking?.use_kalman ?? legacyTracking?.use_kalman ?? true,
+      processing_size:
+        currentTracking?.processing_size ??
+        legacyTracking?.tracking_processing_size ??
+        { width: 1920, height: 1080 },
+      fastsam: {
+        threshold: currentTracking?.fastsam?.threshold ?? 0.5,
+      },
+      color: {
+        tolerance: currentTracking?.color?.tolerance ?? 30,
+      },
+    },
+  };
+  if (legacyTracking?.enabled) normalized.detection.object.enabled = true;
+  return normalized;
+};
 
 const normalizeOutputMode = (
   values: DeviceConfigValues,
@@ -88,9 +156,9 @@ const serializeConfigValues = (
     detection: {
       object: {
         enabled: values.detection.object.enabled,
+        model: values.detection.object.model,
         threshold: values.detection.object.threshold,
         processing_size: { ...values.detection.object.processing_size },
-        model: { ...values.detection.object.model },
       },
       face: {
         enabled: values.detection.face.enabled,
@@ -105,6 +173,22 @@ const serializeConfigValues = (
         ...(values.detection.motion.processing_size
           ? { processing_size: { ...values.detection.motion.processing_size } }
           : {}),
+      },
+    },
+    tracking: {
+      single_object: {
+        enabled: values.tracking.single_object.enabled,
+        default_target_source:
+          values.tracking.single_object.default_target_source,
+        fallback_target_source:
+          values.tracking.single_object.fallback_target_source,
+        score_threshold: values.tracking.single_object.score_threshold,
+        use_kalman: values.tracking.single_object.use_kalman,
+        processing_size: {
+          ...values.tracking.single_object.processing_size,
+        },
+        fastsam: { ...values.tracking.single_object.fastsam },
+        color: { ...values.tracking.single_object.color },
       },
     },
   };
@@ -124,29 +208,6 @@ const serializeConfigValues = (
         : {}),
     };
   }
-  if (values.detection.object_tracking) {
-    serialized.detection.object_tracking = {
-      enabled: values.detection.object_tracking.enabled,
-      search_method: values.detection.object_tracking.search_method,
-      use_kalman: values.detection.object_tracking.use_kalman,
-      score_threshold: values.detection.object_tracking.score_threshold,
-      ...(values.detection.object_tracking.detection_processing_size
-        ? {
-            detection_processing_size: {
-              ...values.detection.object_tracking.detection_processing_size,
-            },
-          }
-        : {}),
-      ...(values.detection.object_tracking.tracking_processing_size
-        ? {
-            tracking_processing_size: {
-              ...values.detection.object_tracking.tracking_processing_size,
-            },
-          }
-        : {}),
-    };
-  }
-
   return serialized;
 };
 
@@ -177,7 +238,6 @@ const TPU_FEATURE_IDS: TpuFeatureId[] = [
   "object",
   "face",
   "human_pose",
-  "object_tracking",
 ];
 
 const isTpuFeatureId = (value: string): value is TpuFeatureId =>
@@ -368,13 +428,16 @@ function validateDraftLocally(
         "detection.human_pose.threshold",
         values.detection.human_pose?.threshold,
       ]);
-    } else if (feature.id === "object_tracking") {
-      thresholdFields.push([
-        "detection.object_tracking.score_threshold",
-        values.detection.object_tracking?.score_threshold,
-      ]);
     }
   });
+  thresholdFields.push([
+    "tracking.single_object.score_threshold",
+    values.tracking.single_object.score_threshold,
+  ]);
+  thresholdFields.push([
+    "tracking.single_object.fastsam.threshold",
+    values.tracking.single_object.fastsam.threshold,
+  ]);
   thresholdFields.forEach(([field, value]) => {
     if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1) {
       errors.push({
@@ -406,21 +469,32 @@ function validateDraftLocally(
         featureProcessingSize(feature),
         errors,
       );
-    } else if (feature.id === "object_tracking") {
-      validateProcessingSize(
-        "detection.object_tracking.detection_processing_size",
-        values.detection.object_tracking?.detection_processing_size,
-        feature.detection_processing_size ?? feature.detectionProcessingSize,
-        errors,
-      );
-      validateProcessingSize(
-        "detection.object_tracking.tracking_processing_size",
-        values.detection.object_tracking?.tracking_processing_size,
-        feature.tracking_processing_size ?? feature.trackingProcessingSize,
-        errors,
-      );
     }
   });
+  const trackingCapability = (capabilities.ai?.features ?? []).find(
+    (feature) =>
+      feature.id === "single_object_tracking" || feature.id === "object_tracking",
+  );
+  validateProcessingSize(
+    "tracking.single_object.processing_size",
+    values.tracking.single_object.processing_size,
+    trackingCapability?.processing_size ??
+      trackingCapability?.processingSize ??
+      trackingCapability?.tracking_processing_size ??
+      trackingCapability?.trackingProcessingSize,
+    errors,
+  );
+  if (
+    !Number.isFinite(values.tracking.single_object.color.tolerance) ||
+    values.tracking.single_object.color.tolerance < 0 ||
+    values.tracking.single_object.color.tolerance > 100
+  ) {
+    errors.push({
+      field: "tracking.single_object.color.tolerance",
+      code: "OUT_OF_RANGE",
+      message: i18n.t("config.validation.colorToleranceRange"),
+    });
+  }
   const motionFeature = capabilities.ai?.features.find(
     (feature) => feature.id === "motion",
   );
@@ -548,9 +622,10 @@ export function useDeviceConfiguration({
   }, []);
 
   const assignDocument = useCallback((document: DeviceConfigDocument) => {
+    const normalized = normalizeConfigValues(document.values);
     setRevision(document.revision);
-    setOriginal(cloneValues(document.values));
-    setDraft(normalizeOutputMode(document.values));
+    setOriginal(cloneValues(normalized));
+    setDraft(normalizeOutputMode(normalized));
   }, []);
 
   const load = useCallback(async (overrideApiBaseUrl?: string) => {
@@ -863,7 +938,7 @@ export function useDeviceConfiguration({
     [apiBaseUrl, deviceId, finishApplicationError, resumeApplication],
   );
 
-  const saveAndApply = useCallback(async () => {
+  const saveAndApply = useCallback(async (scope: ConfigSaveScope = "all") => {
     if (
       !capabilities ||
       !draft ||
@@ -874,14 +949,24 @@ export function useDeviceConfiguration({
     ) {
       return;
     }
-    const localErrors = validateDraftLocally(capabilities, draft);
+    const scopedValues = cloneValues(scope === "all" ? draft : original);
+    if (scope === "detection") {
+      scopedValues.detection.object = cloneValues(draft).detection.object;
+    } else if (scope === "tracking") {
+      scopedValues.tracking.single_object = cloneValues(draft).tracking.single_object;
+    }
+    const scopedHasChanges =
+      JSON.stringify(serializeConfigValues(scopedValues)) !==
+      JSON.stringify(serializeConfigValues(original));
+    if (!scopedHasChanges) return;
+    const localErrors = validateDraftLocally(capabilities, scopedValues);
     if (localErrors.length > 0) {
       setValidation({ valid: false, errors: localErrors, warnings: [], requires: [] });
       return;
     }
 
     const controller = beginOperation();
-    const payload = { revision, values: serializeConfigValues(draft) };
+    const payload = { revision, values: serializeConfigValues(scopedValues) };
     setApplicationState("validating");
     onApplicationLockChange(true);
     setRequestError(null);

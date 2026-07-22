@@ -163,7 +163,7 @@ const configCapabilities = {
       { id: "human_pose", name: "人体姿态", model: "YOLOv8 Pose", processing_size: processingCapability(640, 384) },
       {
         id: "object_tracking",
-        name: "目标检测与跟踪",
+        name: "单目标跟踪",
         model: "YOLOv8n + FearTrack",
         search_methods: ["color", "fastsam"],
         detection_processing_size: { fixed: true, width: 640, height: 384 },
@@ -215,6 +215,41 @@ const currentConfig = {
       motion: { enabled: false, sensitivity: 50, processing_size: { width: 640, height: 360 } },
     },
   },
+};
+
+const splitDetectionTrackingConfig = () => {
+  const config = structuredClone(currentConfig) as typeof currentConfig & {
+    values: typeof currentConfig.values & {
+      tracking: {
+        single_object: {
+          enabled: boolean;
+          default_target_source: "detection" | "fastsam" | "color" | "box";
+          fallback_target_source: "fastsam" | "color" | "box";
+          score_threshold: number;
+          use_kalman: boolean;
+          processing_size: { width: number; height: number };
+          fastsam: { threshold: number };
+          color: { tolerance: number };
+        };
+      };
+    };
+  };
+  config.values.detection.object.model = "builtin.person_detection" as never;
+  delete (config.values.detection as unknown as Record<string, unknown>)
+    .object_tracking;
+  config.values.tracking = {
+    single_object: {
+      enabled: true,
+      default_target_source: "detection",
+      fallback_target_source: "box",
+      score_threshold: 0.55,
+      use_kalman: true,
+      processing_size: { width: 1920, height: 1080 },
+      fastsam: { threshold: 0.45 },
+      color: { tolerance: 30 },
+    },
+  };
+  return config;
 };
 
 const modelImporterCatalog = {
@@ -1465,12 +1500,12 @@ test("shows an active custom detector as the single object detection pipeline", 
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
   await expect(page.getByText("自定义 · 安全帽检测")).toBeVisible();
-  const builtin = page.getByRole("switch", { name: "启用内置人员检测" });
-  await expect(builtin).not.toBeChecked();
-  await expect(builtin).toBeDisabled();
-  await expect(
-    page.getByText("自定义模型正在运行，请先停用自定义模型。"),
-  ).toBeVisible();
+  const detection = page.getByRole("switch", { name: "启用目标检测" });
+  await expect(detection).toBeChecked();
+  await expect(detection).toBeEnabled();
+  await expect(page.getByRole("combobox", { name: "检测模型" })).toHaveValue(
+    "018f1234abcd5678",
+  );
   await expect(page.getByText("运行中", { exact: true })).toBeVisible();
 });
 
@@ -1508,7 +1543,7 @@ test("uses config model source instead of the model-list active flag", async ({
     "内置 · 人员检测",
   );
   await expect(
-    page.getByRole("switch", { name: "启用内置人员检测" }),
+    page.getByRole("switch", { name: "启用目标检测" }),
   ).toBeChecked();
 });
 
@@ -1591,18 +1626,20 @@ test("renders AI capabilities and keeps TPU features mutually exclusive", async 
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
-  const person = page.getByRole("switch", { name: "启用内置人员检测" });
+  const person = page.getByRole("switch", { name: "启用目标检测" });
   const face = page.getByRole("switch", { name: "启用人脸检测" });
   const pose = page.getByRole("switch", { name: "启用人体姿态检测" });
-  const tracking = page.getByRole("switch", { name: "启用目标检测与跟踪" });
+  const tracking = page.getByRole("switch", { name: "启用单目标跟踪" });
   const motion = page.getByRole("switch", { name: "启用移动检测" });
 
-  await expect(page.getByText("TDL_MODEL_YOLOV8N_DET_MONITOR_PERSON")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "检测模型" })).toHaveValue(
+    "builtin.person_detection",
+  );
   await expect(page.getByText("内置 · 人员检测")).toBeVisible();
   await expect(page.getByLabel("AI 输入帧尺寸 宽度").first()).toHaveValue("448");
   await expect(page.getByLabel("AI 输入帧尺寸 高度").first()).toHaveValue("256");
   await expect(page.getByText("YOLOv8 Pose")).toBeVisible();
-  await expect(page.getByText("YOLOv8n + FearTrack")).toBeVisible();
+  await expect(page.getByText(/FearTrack/).first()).toBeVisible();
   await expect(person).toBeChecked();
 
   page.once("dialog", (dialog) => dialog.accept());
@@ -1611,13 +1648,12 @@ test("renders AI capabilities and keeps TPU features mutually exclusive", async 
   await expect(person).not.toBeChecked();
   await expect(face).not.toBeChecked();
 
-  page.once("dialog", (dialog) => dialog.accept());
   await tracking.click();
   await expect(tracking).toBeChecked();
-  await expect(pose).not.toBeChecked();
+  await expect(pose).toBeChecked();
   await expect(person).not.toBeChecked();
-  await page.getByRole("combobox", { name: "搜索方式" }).selectOption("fastsam");
-  await expect(page.getByRole("combobox", { name: "搜索方式" })).toHaveValue(
+  await page.getByRole("combobox", { name: "默认目标获取方式" }).selectOption("fastsam");
+  await expect(page.getByRole("combobox", { name: "默认目标获取方式" })).toHaveValue(
     "fastsam",
   );
 
@@ -1625,6 +1661,121 @@ test("renders AI capabilities and keeps TPU features mutually exclusive", async 
   await expect(motion).toBeChecked();
   await expect(tracking).toBeChecked();
   await expect(page.getByText("有未应用的修改")).toBeVisible();
+});
+
+test("migrates the legacy combined feature into independent DET and TRACK controls", async ({
+  page,
+}) => {
+  const legacyConfig = structuredClone(currentConfig);
+  legacyConfig.values.detection.object.enabled = false;
+  legacyConfig.values.detection.object_tracking.enabled = true;
+  await mockConfigurationRead(page, legacyConfig);
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  const detection = page.getByRole("switch", { name: "启用目标检测" });
+  const tracking = page.getByRole("switch", { name: "启用单目标跟踪" });
+  await expect(detection).toBeChecked();
+  await expect(tracking).toBeChecked();
+
+  await detection.click();
+  await expect(detection).not.toBeChecked();
+  await expect(tracking).toBeChecked();
+  await expect(
+    page.getByRole("combobox", { name: "默认目标获取方式" }).locator(
+      'option[value="detection"]',
+    ),
+  ).toBeDisabled();
+
+  await detection.click();
+  await tracking.click();
+  await expect(detection).toBeChecked();
+  await expect(tracking).not.toBeChecked();
+});
+
+test("saves DET and TRACK independently without writing the legacy field", async ({
+  page,
+}) => {
+  const splitConfig = splitDetectionTrackingConfig();
+  const validationPayloads: Array<Record<string, unknown>> = [];
+  await mockConfigurationRead(page, splitConfig);
+  await page.route("**/api/v1/config/validate", async (route) => {
+    validationPayloads.push(await route.request().postDataJSON());
+    return fulfillJson(route, {
+      valid: false,
+      errors: [{ field: "test", code: "TEST_STOP", message: "stop after capture" }],
+      warnings: [],
+      requires: [],
+    });
+  });
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await page.locator(".detection-panel").getByRole("slider").fill("0.61");
+  await page.getByRole("switch", { name: "使用 Kalman 滤波" }).click();
+  await page.getByRole("button", { name: "保存目标检测" }).click();
+  await expect.poll(() => validationPayloads.length).toBe(1);
+
+  const detectionPayload = validationPayloads[0] as {
+    values: {
+      detection: { object: { threshold: number }; object_tracking?: unknown };
+      tracking: { single_object: { use_kalman: boolean } };
+    };
+  };
+  expect(detectionPayload.values.detection.object.threshold).toBe(0.61);
+  expect(detectionPayload.values.tracking.single_object.use_kalman).toBe(true);
+  expect(detectionPayload.values.detection.object_tracking).toBeUndefined();
+
+  await page.getByRole("button", { name: "保存单目标跟踪" }).click();
+  await expect.poll(() => validationPayloads.length).toBe(2);
+  const trackingPayload = validationPayloads[1] as typeof detectionPayload;
+  expect(trackingPayload.values.detection.object.threshold).toBe(0.7);
+  expect(trackingPayload.values.tracking.single_object.use_kalman).toBe(false);
+  expect(trackingPayload.values.detection.object_tracking).toBeUndefined();
+});
+
+test("shows TRACK runtime state and clears only the active target", async ({
+  page,
+}) => {
+  const splitConfig = splitDetectionTrackingConfig();
+  let clearRequests = 0;
+  await mockConfigurationRead(page, splitConfig);
+  await page.route("**/api/v1/tracking/status", (route) =>
+    fulfillJson(route, {
+      enabled: true,
+      state: "tracking",
+      source: "detection",
+      target_valid: true,
+      score: 0.91,
+      detection_paused: false,
+      error: null,
+    }),
+  );
+  await page.route("**/api/v1/tracking/target", (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    clearRequests += 1;
+    return fulfillJson(route, {
+      enabled: true,
+      state: "waiting_target",
+      source: null,
+      target_valid: false,
+      score: null,
+      detection_paused: false,
+      error: null,
+    });
+  });
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  await expect(page.getByText("正在跟踪")).toBeVisible();
+  await page.getByRole("button", { name: "清除当前目标" }).click();
+  await expect(page.getByText("等待选择目标")).toBeVisible();
+  expect(clearRequests).toBe(1);
+  await expect(page.getByRole("switch", { name: "启用目标检测" })).toBeChecked();
+  await expect(page.getByRole("switch", { name: "启用单目标跟踪" })).toBeChecked();
 });
 
 test("keeps AI configuration usable when processing-size constraints are absent", async ({
@@ -1656,7 +1807,7 @@ test("keeps AI configuration usable when processing-size constraints are absent"
   await page.getByRole("radio").click();
   await page.getByRole("button", { name: "连接", exact: true }).click();
 
-  await expect(page.getByRole("switch", { name: "启用内置人员检测" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "启用目标检测" })).toBeVisible();
   await expect(page.locator(".processing-size-editor--readonly")).toContainText(
     "448 × 256",
   );
@@ -1775,7 +1926,7 @@ test("hides AI controls omitted by device capabilities", async ({ page }) => {
   await expect(page.getByRole("switch", { name: "启用人脸检测" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "启用目标检测" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "启用人体姿态检测" })).toHaveCount(0);
-  await expect(page.getByRole("switch", { name: "启用目标检测与跟踪" })).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "启用单目标跟踪" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "启用移动检测" })).toHaveCount(0);
 });
 
@@ -2072,11 +2223,7 @@ test("edits, validates, saves, applies, and polls configuration", async ({
           enabled: true,
           threshold: 0.7,
           processing_size: { width: 448, height: 256 },
-          model: {
-            source: "builtin",
-            id: "builtin.object_detection",
-            runtime_model: "YOLOV8_DETECTION",
-          },
+          model: "builtin.person_detection",
         },
       },
     },

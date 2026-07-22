@@ -2467,6 +2467,30 @@ a:focus-visible {
   flex: 0 0 auto;
 }
 
+.detection-panel__controls {
+  min-height: 54px;
+  padding: 10px 2px 12px 46px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  border-top: 1px solid #1c1c1c;
+}
+
+.detection-panel__actions,
+.tracking-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.detection-panel__actions .button,
+.tracking-panel__actions .button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 .feature-row {
   min-height: 68px;
   padding: 10px 2px;
@@ -2554,9 +2578,47 @@ a:focus-visible {
 .tracking-controls {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(112px, 0.7fr) minmax(190px, 1.3fr) auto;
+  grid-template-columns: repeat(2, minmax(130px, 0.8fr)) minmax(190px, 1.2fr) auto;
   align-items: end;
   gap: 16px;
+}
+
+.tracking-panel__notice,
+.tracking-panel__link-state,
+.tracking-panel__error,
+.tracking-parameter-grid,
+.tracking-panel__actions {
+  grid-column: 1 / -1;
+}
+
+.tracking-panel__notice,
+.tracking-panel__link-state,
+.tracking-panel__error {
+  padding: 8px 46px;
+  color: var(--muted-light);
+  border-top: 1px solid var(--line-soft);
+  font-size: 10px;
+}
+
+.tracking-panel__link-state {
+  color: var(--success);
+}
+
+.tracking-panel__error {
+  color: var(--danger);
+}
+
+.tracking-parameter-grid {
+  padding: 10px 46px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 24px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tracking-panel__actions {
+  padding: 10px 2px 4px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .tracking-control {
@@ -4621,6 +4683,17 @@ a:focus-visible {
     padding-left: 2px;
   }
 
+  .detection-panel__controls {
+    padding-left: 2px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detection-panel__actions,
+  .tracking-panel__actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .feature-row--tracking .tracking-controls {
     grid-column: 1 / -1;
     grid-row: 2;
@@ -4629,6 +4702,17 @@ a:focus-visible {
   .tracking-controls .feature-row__range {
     grid-column: auto;
     grid-row: auto;
+  }
+
+  .tracking-parameter-grid {
+    padding-inline: 2px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tracking-panel__notice,
+  .tracking-panel__link-state,
+  .tracking-panel__error {
+    padding-inline: 2px;
   }
 
   .configuration-footer {
