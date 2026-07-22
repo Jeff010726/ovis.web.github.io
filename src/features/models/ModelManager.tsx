@@ -305,9 +305,11 @@ export function ModelManager({
     const controller = new AbortController();
     void getModelImporters(apiBaseUrl, controller.signal)
       .then(setCatalog)
-      .catch((nextError) =>
-        setError(nextError instanceof Error ? nextError.message : String(nextError)),
-      );
+      .catch((nextError) => {
+        if (!(nextError instanceof DOMException && nextError.name === "AbortError")) {
+          setError(nextError instanceof Error ? nextError.message : String(nextError));
+        }
+      });
     return () => controller.abort();
   }, [apiBaseUrl, catalogReload]);
 

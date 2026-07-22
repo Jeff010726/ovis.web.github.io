@@ -78,11 +78,11 @@ async function requestModelApi<T>(
     return (await response.json()) as T;
   } catch (error) {
     if (error instanceof ModelApiError) throw error;
-    if (
-      error instanceof LocalRequestTimeoutError ||
-      (error instanceof DOMException && error.name === "AbortError")
-    ) {
+    if (error instanceof LocalRequestTimeoutError) {
       throw new ModelApiError("Model request timed out");
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
     }
     throw new ModelApiError(
       error instanceof Error ? error.message : "Unable to reach the model API",

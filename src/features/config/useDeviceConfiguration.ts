@@ -109,6 +109,12 @@ const serializeConfigValues = (
     },
   };
 
+  if (values.ai_isp) {
+    serialized.ai_isp = {
+      bnr: { enabled: values.ai_isp.bnr.enabled },
+    };
+  }
+
   const outputValues = normalizeOutputMode(values).outputs!;
   serialized.outputs = {
     rtsp: { enabled: outputValues.rtsp.enabled },
@@ -269,11 +275,70 @@ const tpuFeatureEnabled = (
   return values.detection[featureId]?.enabled === true;
 };
 
+const aiFeatureEnabled = (values: DeviceConfigValues, featureId: string) => {
+  if (featureId === "motion") return values.detection.motion.enabled;
+  if (isTpuFeatureId(featureId)) return tpuFeatureEnabled(values, featureId);
+  return false;
+};
+
+const assertCompleteConfigDocument = (
+  capabilities: ConfigCapabilities,
+  document: DeviceConfigDocument,
+) => {
+  if (
+    capabilities.schema_version >= 5 &&
+    typeof document.values.ai_isp?.bnr.enabled !== "boolean"
+  ) {
+    throw new ConfigRequestError(i18n.t("config.validation.invalidData"));
+  }
+};
+
 function validateDraftLocally(
   capabilities: ConfigCapabilities,
   values: DeviceConfigValues,
 ): ConfigIssue[] {
   const errors: ConfigIssue[] = [];
+
+  const bnrCapability = capabilities.ai_isp?.bnr;
+  const bnrEnabled = values.ai_isp?.bnr.enabled === true;
+  if (
+    capabilities.schema_version >= 5 &&
+    typeof values.ai_isp?.bnr.enabled !== "boolean"
+  ) {
+    errors.push({
+      field: "ai_isp.bnr.enabled",
+      code: "INCOMPLETE_CONFIG",
+      message: i18n.t("config.validation.invalidData"),
+    });
+  } else if (bnrEnabled && bnrCapability?.supported !== true) {
+    errors.push({
+      field: "ai_isp.bnr.enabled",
+      code: "AI_BNR_UNSUPPORTED",
+      message: i18n.t("config.validation.aiBnrUnsupported"),
+    });
+  }
+  const requiredMainFps = bnrCapability?.required_main_fps ?? 30;
+  if (bnrEnabled && values.video.main.fps !== requiredMainFps) {
+    errors.push({
+      field: "video.main.fps",
+      code: "AI_BNR_REQUIRES_FPS",
+      message: i18n.t("config.validation.aiBnrRequiresFps", {
+        fps: requiredMainFps,
+      }),
+    });
+  }
+  if (
+    bnrEnabled &&
+    (bnrCapability?.exclusive_with ?? []).some((featureId) =>
+      aiFeatureEnabled(values, featureId),
+    )
+  ) {
+    errors.push({
+      field: "ai_isp.bnr.enabled",
+      code: "AI_BNR_FEATURE_CONFLICT",
+      message: i18n.t("config.validation.aiBnrConflict"),
+    });
+  }
 
   const uvcEnabled = values.outputs?.uvc.enabled;
   const rtspOutputEnabled = values.outputs?.rtsp.enabled;
@@ -567,6 +632,7 @@ export function useDeviceConfiguration({
         getCurrentConfig(requestApiBaseUrl, controller.signal),
       ]);
       if (controller.signal.aborted) return;
+      assertCompleteConfigDocument(nextCapabilities, document);
       setCapabilities(nextCapabilities);
       assignDocument(document);
       setApplicationState("idle");
@@ -620,6 +686,7 @@ export function useDeviceConfiguration({
               : getConfigCapabilities(activeApiBaseUrl, controller.signal),
           ]);
           nextCapabilities = loadedCapabilities;
+          assertCompleteConfigDocument(loadedCapabilities, document);
           setTask(nextTask);
 
           if (nextTask?.state === "failed") {
@@ -987,6 +1054,7 @@ export function useDeviceConfiguration({
       const completedTask = await pollResetTask(taskReference.task_id, controller);
       try {
         const document = await getCurrentConfig(apiBaseUrl, controller.signal);
+        if (capabilities) assertCompleteConfigDocument(capabilities, document);
         assignDocument(document);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -1022,6 +1090,7 @@ export function useDeviceConfiguration({
     applicationBusy,
     assignDocument,
     beginOperation,
+    capabilities,
     onApplicationLockChange,
     pollResetTask,
   ]);

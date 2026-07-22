@@ -76,6 +76,24 @@ export interface AiCapabilities {
   motionProcessingSize?: ProcessingSizeCapability;
 }
 
+export type AiIspExclusiveFeatureId =
+  | "object"
+  | "face"
+  | "motion"
+  | "human_pose"
+  | "object_tracking";
+
+export interface AiIspBnrCapability {
+  supported: boolean;
+  apply_mode: "ipcamera_restart";
+  required_main_fps: number;
+  exclusive_with: AiIspExclusiveFeatureId[];
+}
+
+export interface AiIspCapabilities {
+  bnr: AiIspBnrCapability;
+}
+
 export interface OutputCapabilities {
   rtsp: {
     supported: boolean;
@@ -101,6 +119,7 @@ export interface ConfigCapabilities {
     object_tracking?: boolean;
   };
   ai?: AiCapabilities;
+  ai_isp?: AiIspCapabilities;
   outputs?: OutputCapabilities;
 }
 
@@ -111,6 +130,11 @@ export interface StreamConfigValues {
 }
 
 export interface DeviceConfigValues {
+  ai_isp?: {
+    bnr: {
+      enabled: boolean;
+    };
+  };
   outputs?: {
     rtsp: {
       enabled: boolean;

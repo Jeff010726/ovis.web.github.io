@@ -1663,6 +1663,78 @@ test("keeps AI configuration usable when processing-size constraints are absent"
   await expect(page.locator(".configuration-page")).toBeVisible();
 });
 
+test("enforces schema 5 AI BNR exclusivity in the configuration draft", async ({
+  page,
+}) => {
+  const capabilities = {
+    ...structuredClone(configCapabilities),
+    schema_version: 5,
+    ai_isp: {
+      bnr: {
+        supported: true,
+        apply_mode: "ipcamera_restart",
+        required_main_fps: 30,
+        exclusive_with: [
+          "object",
+          "face",
+          "motion",
+          "human_pose",
+          "object_tracking",
+        ],
+      },
+    },
+  };
+  const configuration = {
+    ...structuredClone(currentConfig),
+    values: {
+      ...structuredClone(currentConfig.values),
+      ai_isp: { bnr: { enabled: false } },
+    },
+  };
+
+  await page.route("**/api/v1/config/capabilities", (route) =>
+    fulfillJson(route, capabilities),
+  );
+  await page.route("**/api/v1/config", (route) =>
+    fulfillJson(route, configuration),
+  );
+  await page.route("**/api/v1/models/importers", (route) =>
+    fulfillJson(route, modelImporterCatalog),
+  );
+  await page.route("**/api/v1/models", (route) =>
+    fulfillJson(route, {
+      models: [],
+      storage: { totalBytes: 0, availableBytes: 0, reservedBytes: 0 },
+    }),
+  );
+  await discoverSingleDevice(page);
+  await page.getByRole("radio").click();
+  await page.getByRole("button", { name: "连接", exact: true }).click();
+
+  const bnr = page.getByRole("switch", { name: "启用 AI BNR" });
+  const object = page.getByRole("switch", { name: "启用内置人员检测" });
+  const mainFps = page
+    .locator(".stream-panel")
+    .filter({ hasText: "主码流" })
+    .getByLabel("帧率");
+  await expect(bnr).not.toBeChecked();
+  await expect(object).toBeChecked();
+  await mainFps.selectOption("60");
+  await expect(bnr).toBeDisabled();
+  await expect(page.getByText("请先将主码流设置为 30 FPS")).toBeVisible();
+  await mainFps.selectOption("30");
+  await expect(bnr).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await bnr.click();
+  await expect(bnr).toBeChecked();
+  await expect(object).not.toBeChecked();
+  await expect(object).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "启用移动检测" })).toBeDisabled();
+  await mainFps.selectOption("60");
+  await expect(bnr).not.toBeChecked();
+  await expect(bnr).toBeDisabled();
+});
+
 test("renders output capabilities and disables only RTSP-dependent controls", async ({
   page,
 }) => {

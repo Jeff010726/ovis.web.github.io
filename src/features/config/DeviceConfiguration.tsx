@@ -15,6 +15,7 @@ import {
   Save,
   ScanFace,
   Settings2,
+  Sparkles,
   Unplug,
   Usb,
   Video,
@@ -29,6 +30,7 @@ import type {
 } from "../device/device.types";
 import type {
   AiFeatureCapability,
+  AiIspExclusiveFeatureId,
   ConfigIssue,
   DeviceConfigValues,
   ObjectTrackingSearchMethod,
@@ -162,6 +164,7 @@ interface StreamEditorProps {
   bitrateDisabled?: boolean;
   issues: ConfigIssue[];
   updateDraft: (mutator: (draft: DeviceConfigValues) => void) => void;
+  onFpsChanged?: (draft: DeviceConfigValues, fps: number) => void;
 }
 
 function StreamEditor({
@@ -173,6 +176,7 @@ function StreamEditor({
   bitrateDisabled = disabled,
   issues,
   updateDraft,
+  onFpsChanged,
 }: StreamEditorProps) {
   const { t } = useTranslation();
   const options = profileOptions(profiles, values.profile);
@@ -190,6 +194,7 @@ function StreamEditor({
       stream.profile = profileId;
       if (profile && !profile.fps_options.includes(stream.fps)) {
         stream.fps = profile.fps_options[0] ?? stream.fps;
+        onFpsChanged?.(draft, stream.fps);
       }
       if (profile) {
         stream.bitrate_kbps = Math.min(
@@ -233,7 +238,9 @@ function StreamEditor({
             aria-invalid={Boolean(fieldIssue("fps"))}
             onChange={(event) =>
               updateDraft((draft) => {
-                draft.video[streamKey].fps = Number(event.target.value);
+                const fps = Number(event.target.value);
+                draft.video[streamKey].fps = fps;
+                onFpsChanged?.(draft, fps);
               })
             }
           >
@@ -612,6 +619,31 @@ const TPU_FEATURE_IDS: TpuFeatureId[] = [
 const isTpuFeatureId = (value: string): value is TpuFeatureId =>
   TPU_FEATURE_IDS.includes(value as TpuFeatureId);
 
+const aiFeatureEnabled = (
+  values: DeviceConfigValues,
+  featureId: AiIspExclusiveFeatureId,
+) => {
+  if (featureId === "motion") return values.detection.motion.enabled;
+  if (featureId === "object" || featureId === "face") {
+    return values.detection[featureId].enabled;
+  }
+  return values.detection[featureId]?.enabled === true;
+};
+
+const disableAiFeature = (
+  values: DeviceConfigValues,
+  featureId: AiIspExclusiveFeatureId,
+) => {
+  if (featureId === "motion") {
+    values.detection.motion.enabled = false;
+  } else if (featureId === "object" || featureId === "face") {
+    values.detection[featureId].enabled = false;
+  } else {
+    const feature = values.detection[featureId];
+    if (feature) feature.enabled = false;
+  }
+};
+
 type ConfigSectionId = "video" | "outputs" | "detection" | "models";
 
 interface ConfigSection {
@@ -685,6 +717,11 @@ export function DeviceConfiguration({
       ? motionCapability.processing_size ?? motionCapability.processingSize
       : configuration.capabilities?.ai?.motion_processing_size ??
         configuration.capabilities?.ai?.motionProcessingSize);
+  const aiBnrCapability = configuration.capabilities?.ai_isp?.bnr;
+  const aiBnrEnabled = configuration.draft?.ai_isp?.bnr.enabled === true;
+  const aiBnrRequiredMainFps = aiBnrCapability?.required_main_fps ?? 30;
+  const aiBnrFpsReady =
+    configuration.draft?.video.main.fps === aiBnrRequiredMainFps;
   const configSections = useMemo<ConfigSection[]>(() => {
     const sectionIds: Array<Pick<ConfigSection, "id" | "labelKey">> = [
       { id: "video", labelKey: "config.sections.video" },
@@ -841,13 +878,15 @@ export function DeviceConfiguration({
       ? customModels.find((model) => model.id === runtimeObjectValues.model.id) ??
         null
       : null;
-  const runningModelLabel = !runtimeObjectValues?.enabled
-    ? t("config.detection.noRunningModel")
-    : runtimeObjectValues.model.source === "builtin"
-      ? t("config.detection.builtinRunningModel")
-      : t("config.detection.customRunningModel", {
-          name: selectedCustomModel?.name ?? runtimeObjectValues.model.id,
-        });
+  const runningModelLabel = aiBnrEnabled
+    ? t("config.aiIsp.bnr")
+    : !runtimeObjectValues?.enabled
+      ? t("config.detection.noRunningModel")
+      : runtimeObjectValues.model.source === "builtin"
+        ? t("config.detection.builtinRunningModel")
+        : t("config.detection.customRunningModel", {
+            name: selectedCustomModel?.name ?? runtimeObjectValues.model.id,
+          });
 
   useEffect(() => {
     if (
@@ -868,13 +907,17 @@ export function DeviceConfiguration({
   );
 
   const confirmCustomModelActivation = useCallback(() => {
+    if (aiBnrEnabled) {
+      window.alert(t("config.validation.aiBnrConflict"));
+      return false;
+    }
     const draft = configuration.draft;
     const hasConflict =
       draft?.detection.face.enabled === true ||
       draft?.detection.human_pose?.enabled === true ||
       draft?.detection.object_tracking?.enabled === true;
     return !hasConflict || window.confirm(t("config.detection.conflictConfirm"));
-  }, [configuration.draft, t]);
+  }, [aiBnrEnabled, configuration.draft, t]);
 
   const setTpuEnabled = (featureId: TpuFeatureId, enabled: boolean) => {
     const hasConflictingFeature =
@@ -895,6 +938,9 @@ export function DeviceConfiguration({
       return;
     }
     configuration.updateDraft((draft) => {
+      if (enabled && draft.ai_isp) {
+        draft.ai_isp.bnr.enabled = false;
+      }
       if (
         enabled &&
         configuration.capabilities?.ai?.max_active_tpu_features === 1
@@ -913,6 +959,27 @@ export function DeviceConfiguration({
         draft.detection[featureId].enabled = enabled;
       } else if (draft.detection[featureId]) {
         draft.detection[featureId].enabled = enabled;
+      }
+    });
+  };
+
+  const setAiBnrEnabled = (enabled: boolean) => {
+    const draft = configuration.draft;
+    if (!draft || !aiBnrCapability || !draft.ai_isp) return;
+    if (enabled && !aiBnrFpsReady) return;
+    const hasConflict =
+      enabled &&
+      aiBnrCapability.exclusive_with.some((featureId) =>
+        aiFeatureEnabled(draft, featureId),
+      );
+    if (hasConflict && !window.confirm(t("config.aiIsp.conflictConfirm"))) return;
+    configuration.updateDraft((nextDraft) => {
+      if (!nextDraft.ai_isp) return;
+      nextDraft.ai_isp.bnr.enabled = enabled;
+      if (enabled) {
+        aiBnrCapability.exclusive_with.forEach((featureId) =>
+          disableAiFeature(nextDraft, featureId),
+        );
       }
     });
   };
@@ -1206,6 +1273,14 @@ export function DeviceConfiguration({
                         bitrateDisabled={!rtspEnabled}
                         issues={issues}
                         updateDraft={configuration.updateDraft}
+                        onFpsChanged={(draft, fps) => {
+                          if (
+                            fps !== aiBnrRequiredMainFps &&
+                            draft.ai_isp?.bnr.enabled
+                          ) {
+                            draft.ai_isp.bnr.enabled = false;
+                          }
+                        }}
                       />
                       <div className="sub-stream-wrap">
                         <div className="sub-stream-switch">
@@ -1317,6 +1392,44 @@ export function DeviceConfiguration({
                       </div>
                     </div>
                     <div className="feature-list">
+                      {aiBnrCapability && configuration.draft.ai_isp && (
+                        <div className="ai-isp-group">
+                          <div className="ai-isp-group__heading">
+                            <span>{t("config.aiIsp.title")}</span>
+                            <small>{t("config.aiIsp.restartNotice")}</small>
+                          </div>
+                          <div className="feature-row feature-row--simple">
+                            <div className="feature-row__identity">
+                              <span aria-hidden="true">
+                                <Sparkles size={17} />
+                              </span>
+                              <div>
+                                <strong>{t("config.aiIsp.bnr")}</strong>
+                                <small>
+                                  {aiBnrCapability.supported
+                                    ? aiBnrFpsReady
+                                      ? t("config.aiIsp.exclusiveAtFps", {
+                                          fps: aiBnrRequiredMainFps,
+                                        })
+                                      : t("config.aiIsp.requiresFps", {
+                                          fps: aiBnrRequiredMainFps,
+                                        })
+                                    : t("config.aiIsp.unsupported")}
+                                </small>
+                              </div>
+                            </div>
+                            <Toggle
+                              checked={aiBnrEnabled}
+                              disabled={
+                                !aiBnrCapability.supported ||
+                                (!aiBnrEnabled && !aiBnrFpsReady)
+                              }
+                              label={t("config.aiIsp.enableBnr")}
+                              onChange={setAiBnrEnabled}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div className="detection-runtime-summary" aria-live="polite">
                         <span>{t("config.detection.runningModel")}</span>
                         <strong>{runningModelLabel}</strong>
@@ -1330,6 +1443,7 @@ export function DeviceConfiguration({
                             supported
                             enabled={builtinDetectionActive}
                             toggleDisabled={
+                              aiBnrEnabled ||
                               runtimeObjectValues?.model.source === "custom"
                             }
                             value={objectValues.threshold}
@@ -1424,6 +1538,7 @@ export function DeviceConfiguration({
                               capability={capability}
                               values={tracking}
                               disabled={
+                                aiBnrEnabled ||
                                 (configuration.capabilities?.ai
                                   ?.max_active_tpu_features ?? 0) < 1
                               }
@@ -1505,6 +1620,7 @@ export function DeviceConfiguration({
                             title={title}
                             detail={modelDetail}
                             supported
+                            toggleDisabled={aiBnrEnabled}
                             enabled={values.enabled}
                             value={values.threshold}
                             min={0}
@@ -1549,8 +1665,12 @@ export function DeviceConfiguration({
                           valueLabel={`${configuration.draft.detection.motion.sensitivity}`}
                           rangeLabel={t("config.detection.sensitivity")}
                           toggleLabel={t("config.detection.enableMotion")}
+                          toggleDisabled={aiBnrEnabled}
                           onToggle={(checked) =>
                             configuration.updateDraft((draft) => {
+                              if (checked && draft.ai_isp) {
+                                draft.ai_isp.bnr.enabled = false;
+                              }
                               draft.detection.motion.enabled = checked;
                             })
                           }

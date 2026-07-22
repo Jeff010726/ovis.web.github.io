@@ -967,7 +967,7 @@ a:focus-visible {
 }
 
 .ovis-model-viewer > .model-loading,
-.model-error {
+.ovis-model-viewer > .model-error {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -2362,6 +2362,36 @@ a:focus-visible {
 
 .feature-list {
   border-top: 1px solid var(--line-soft);
+}
+
+.ai-isp-group {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ai-isp-group__heading {
+  min-height: 38px;
+  padding: 8px 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ai-isp-group__heading span {
+  color: var(--muted-light);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ai-isp-group__heading small {
+  color: var(--muted);
+  font-size: 9px;
+  text-align: right;
+}
+
+.ai-isp-group .feature-row {
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 0;
 }
 
 .output-mode-panel {
